@@ -129,15 +129,12 @@ Can we feed the same initial conditions to both simulators and run them step-by-
 
 ## 7. Cheat Sheet: Build & Run Commands
 
-Keep this list handy to build, test, and run the simulator without having to re-derive commands.
+Keep this list handy to build, test, run, and train the simulator without having to re-derive commands.
 
 ### Build the PufferLib C Environment
 ```bash
-# Build with CPU backend (default)
+# Build with CPU training backend (default)
 bash build.sh orbit_wars --cpu
-
-# Build with profiling tools enabled
-bash build.sh orbit_wars --profile
 ```
 
 ### Run the Parity Test Suite
@@ -151,3 +148,16 @@ Performs build checks, vector creation, smoke stepping, obs validation, episode 
 ```bash
 .venv/bin/python tests/test_orbit_wars.py
 ```
+
+### Train the Agent (CPU)
+PufferLib reads default configurations directly from the [config/orbit_wars.ini](file:///home/dima/dev/PufferLib-4.0/config/orbit_wars.ini) file. 
+
+To configure 1v1 vs. 4v4 training modes, or scale resource limits, edit `orbit_wars.ini`:
+* **Player Count**: Update `num_agents = 2` (1v1) or `num_agents = 4` (4v4) in the `[env]` section.
+* **Environment Count**: For local CPU training, reduce `total_agents` under `[vec]` to a reasonable number (e.g., `256` or `512`) to manage memory.
+
+Run training using the standard PufferLib train CLI:
+```bash
+puffer train orbit_wars
+```
+*(PufferLib automatically detects CPU build settings from `pufferlib._C` and falls back to CPU execution device paths).*

@@ -16,7 +16,10 @@ import time
 def run(cmd, **kw):
     """Run a command, print it, and check for errors."""
     print(f"\n$ {cmd if isinstance(cmd, str) else ' '.join(cmd)}")
-    return subprocess.run(cmd, shell=isinstance(cmd, str), check=True, **kw)
+    if "shell" not in kw:
+        kw["shell"] = isinstance(cmd, str)
+    return subprocess.run(cmd, check=True, **kw)
+
 
 print("=" * 60)
 print("ORBIT WARS — PUFFERLIB COLAB TEST")

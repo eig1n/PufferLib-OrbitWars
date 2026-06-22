@@ -178,6 +178,8 @@ typedef struct {
 
     /* Combat accumulator — zeroed each step, filled during movement/rotation */
     int arriving_ships[OW_MAX_PLANETS][OW_MAX_PLAYERS];
+
+    int prevent_reset;
 } OrbitWars;
 
 /* ========================================================================
@@ -1097,7 +1099,9 @@ static void ow_handle_game_over(OrbitWars* env) {
     env->boundary_reached = 1;
 
     /* Reset for next episode */
-    c_reset(env);
+    if (!env->prevent_reset) {
+        c_reset(env);
+    }
 }
 
 /* ========================================================================

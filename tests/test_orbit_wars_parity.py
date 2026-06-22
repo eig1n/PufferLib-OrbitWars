@@ -136,6 +136,7 @@ class OrbitWarsStruct(ctypes.Structure):
         ("planet_orbits", ctypes.c_int * OW_MAX_PLANETS),
 
         ("arriving_ships", (ctypes.c_int * OW_MAX_PLAYERS) * OW_MAX_PLANETS),
+        ("prevent_reset", ctypes.c_int),
     ]
 
 # ------------------------------------------------------------------ #
@@ -515,6 +516,7 @@ def test_parity_single_step(lib, seed, num_agents):
     
     # Create C struct and initialize
     c_env = OrbitWarsStruct()
+    ctypes.memset(ctypes.byref(c_env), 0, ctypes.sizeof(c_env))
     lib.init(ctypes.byref(c_env))
     
     # Set up observation, action, reward, terminal memory buffers for C
@@ -626,6 +628,7 @@ def test_parity_rollout(lib, seed, num_agents):
     
     # Create C struct and initialize
     c_env = OrbitWarsStruct()
+    ctypes.memset(ctypes.byref(c_env), 0, ctypes.sizeof(c_env))
     lib.init(ctypes.byref(c_env))
     
     obs_buf = (ctypes.c_float * (OW_OBS_SIZE * 4))()
@@ -691,6 +694,1057 @@ def test_parity_rollout(lib, seed, num_agents):
             
     print(f"  ✓ Seed {seed} rollout parity passed.")
 
+
+# ------------------------------------------------------------------ #
+# Custom Scenario Parity (Mock States from Original Unit Tests)
+# ------------------------------------------------------------------ #
+
+def copy_state_py_to_c_with_speed(obs, c_env, num_agents, ship_speed=6.0):
+    """
+    Copies a mocked observation state into the C struct, utilizing a custom ship_speed configuration.
+    """
+    # 1. Planets
+    raw_planets = obs.get("planets", []) if isinstance(obs, dict) else obs.planets
+    sorted_planets = sorted(raw_planets, key=lambda p: p[0])
+    
+    c_env.num_planets = len(sorted_planets)
+    for i in range(OW_MAX_PLANETS):
+        c_env.planets[i].active = 0
+        c_env.planet_orbits[i] = 0
+        
+    comet_pids = obs.get("comet_planet_ids", []) if isinstance(obs, dict) else obs.comet_planet_ids
+    comet_pid_set = set(comet_pids)
+    
+    for i, p in enumerate(sorted_planets):
+        p_id, owner, x, y, radius, ships, production = p
+        
+        c_env.planets[i].id = p_id
+        c_env.planets[i].owner = owner
+        c_env.planets[i].x = x
+        c_env.planets[i].y = y
+        c_env.planets[i].radius = radius
+        c_env.planets[i].ships = ships
+        c_env.planets[i].production = production
+        c_env.planets[i].is_comet = 1 if p_id in comet_pid_set else 0
+        c_env.planets[i].active = 1
+        
+        dx = x - OW_SUN_X
+        dy = y - OW_SUN_Y
+        r = math.sqrt(dx*dx + dy*dy)
+        c_env.planet_orbital_radius[i] = r
+        
+        calc_angle = math.atan2(dy, dx)
+        
+        if p_id not in comet_pid_set and (r + radius < OW_ROTATION_RADIUS_LIMIT):
+            c_env.planet_orbits[i] = 1
+            step = obs.get("step", 0) if isinstance(obs, dict) else obs.step
+            if step > 0:
+                ang_vel = obs.get("angular_velocity", 0.0) if isinstance(obs, dict) else obs.angular_velocity
+                c_env.planet_angle[i] = calc_angle + ang_vel
+            else:
+                c_env.planet_angle[i] = calc_angle
+        else:
+            c_env.planet_orbits[i] = 0
+            c_env.planet_angle[i] = calc_angle
+
+    # 2. Fleets
+    raw_fleets = obs.get("fleets", []) if isinstance(obs, dict) else obs.fleets
+    sorted_fleets = sorted(raw_fleets, key=lambda f: f[0])
+    
+    for i in range(OW_MAX_FLEETS):
+        c_env.fleets[i].active = 0
+        
+    for i, f in enumerate(sorted_fleets):
+        if i >= OW_MAX_FLEETS:
+            break
+        f_id, owner, x, y, angle, from_pid, ships = f
+        
+        c_env.fleets[i].id = f_id
+        c_env.fleets[i].owner = owner
+        c_env.fleets[i].x = x
+        c_env.fleets[i].y = y
+        c_env.fleets[i].angle = angle
+        c_env.fleets[i].from_planet_id = from_pid
+        c_env.fleets[i].ships = ships
+        if ships <= 1:
+            speed = 1.0
+        else:
+            ratio = math.log(ships) / math.log(1000.0)
+            ratio = min(ratio, 1.0)
+            speed = 1.0 + (ship_speed - 1.0) * math.pow(ratio, 1.5)
+        c_env.fleets[i].speed = speed
+        c_env.fleets[i].active = 1
+
+    # 3. Comets
+    raw_comets = obs.get("comets", []) if isinstance(obs, dict) else obs.comets
+    c_env.num_comet_groups = len(raw_comets)
+    for i in range(OW_MAX_COMET_GROUPS):
+        c_env.comet_groups[i].active = 0
+    for i, g in enumerate(raw_comets):
+        if i >= OW_MAX_COMET_GROUPS:
+            break
+        pids = g.get("planet_ids", []) if isinstance(g, dict) else g.planet_ids
+        paths = g.get("paths", []) if isinstance(g, dict) else g.paths
+        path_idx = g.get("path_index", -1) if isinstance(g, dict) else g.path_index
+        
+        cg = c_env.comet_groups[i]
+        for m in range(min(len(pids), 4)):
+            cg.planet_ids[m] = pids[m]
+        cg.path_index = path_idx
+        cg.num_steps = len(paths[0]) if paths else 0
+        for m in range(min(len(paths), 4)):
+            for k in range(min(len(paths[m]), OW_COMET_PATH_LEN)):
+                cg.paths_x[m][k] = paths[m][k][0]
+                cg.paths_y[m][k] = paths[m][k][1]
+        cg.active = 1
+
+    # 4. Globals
+    c_env.angular_velocity = obs.get("angular_velocity", 0.0) if isinstance(obs, dict) else obs.angular_velocity
+    c_env.next_fleet_id = obs.get("next_fleet_id", 0) if isinstance(obs, dict) else obs.next_fleet_id
+    c_env.current_step = obs.get("step", 0) if isinstance(obs, dict) else obs.step
+    if sorted_planets:
+        c_env.next_planet_id = max(p[0] for p in sorted_planets) + 1
+    else:
+        c_env.next_planet_id = 0
+    c_env.num_agents = num_agents
+    for i in range(num_agents):
+        c_env.slot_for_color[i] = i
+
+
+def run_parity_step_for_scenario(lib, planets, fleets, num_agents=2, step=1, angular_velocity=0.01, config=None):
+    from types import SimpleNamespace
+    from kaggle_environments.envs.orbit_wars.orbit_wars import interpreter
+    
+    if config is None:
+        config = {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0}
+    
+    # 1. Create Python state
+    init_planets_list = []
+    for p in planets:
+        p_id, owner, x, y, radius, ships, production = p
+        dx = x - OW_SUN_X
+        dy = y - OW_SUN_Y
+        r = math.sqrt(dx*dx + dy*dy)
+        if (r + radius < OW_ROTATION_RADIUS_LIMIT):
+            calc_angle = math.atan2(dy, dx)
+            if step > 0:
+                back_angle = calc_angle - (step - 1) * angular_velocity
+            else:
+                back_angle = calc_angle
+            back_x = OW_SUN_X + r * math.cos(back_angle)
+            back_y = OW_SUN_Y + r * math.sin(back_angle)
+            init_planets_list.append([p_id, owner, back_x, back_y, radius, ships, production])
+        else:
+            init_planets_list.append(p[:])
+
+    state = [
+        SimpleNamespace(
+            observation=SimpleNamespace(
+                step=step,
+                planets=[p[:] for p in planets],
+                fleets=[f[:] for f in fleets],
+                next_fleet_id=100,
+                angular_velocity=angular_velocity,
+                initial_planets=init_planets_list,
+                comets=[],
+                comet_planet_ids=[],
+            ),
+            action=[],
+            status="ACTIVE",
+            reward=0,
+        )
+    ]
+    for i in range(1, num_agents):
+        state.append(
+            SimpleNamespace(
+                observation=SimpleNamespace(player=i),
+                action=[],
+                status="ACTIVE",
+                reward=0,
+            )
+        )
+        
+    env = SimpleNamespace(
+        configuration=SimpleNamespace(
+            shipSpeed=config["shipSpeed"], 
+            episodeSteps=config["episodeSteps"], 
+            cometSpeed=config["cometSpeed"]
+        ),
+        done=False,
+    )
+    
+    # 2. Create C environment and initialize
+    c_env = OrbitWarsStruct()
+    ctypes.memset(ctypes.byref(c_env), 0, ctypes.sizeof(c_env))
+    lib.init(ctypes.byref(c_env))
+    
+    obs_buf = (ctypes.c_float * (OW_OBS_SIZE * 4))()
+    action_buf = (ctypes.c_float * (3 * 4))()
+    reward_buf = (ctypes.c_float * 4)()
+    terminal_buf = (ctypes.c_float * 4)()
+    
+    for i in range(4):
+        c_env.obs_ptr[i] = ctypes.addressof(obs_buf) + i * OW_OBS_SIZE * 4
+        c_env.action_ptr[i] = ctypes.addressof(action_buf) + i * 3 * 4
+        c_env.reward_ptr[i] = ctypes.addressof(reward_buf) + i * 4
+        c_env.terminal_ptr[i] = ctypes.addressof(terminal_buf) + i * 4
+
+    # 3. Copy initial state to C
+    copy_state_py_to_c_with_speed(state[0].observation, c_env, num_agents, ship_speed=config["shipSpeed"])
+    c_env.max_steps = int(config["episodeSteps"]) - 2
+    c_env.prevent_reset = 1
+    
+    # 4. Step Python environment
+    new_state = interpreter(state, env)
+    next_step = getattr(new_state[0].observation, "step", 0) + 1
+    for agent_state in new_state:
+        agent_state.observation.step = next_step
+    py_obs = new_state[0].observation
+    
+    # 5. Step C environment
+    lib.c_step_core(ctypes.byref(c_env))
+
+    # 6. Check state parity
+    assert_state_parity(step, py_obs, c_env)
+    
+    # 7. Check reward and terminal parity
+    for p in range(num_agents):
+        py_reward = new_state[p].reward
+        py_status = new_state[p].status
+        
+        slot = -1
+        for s in range(c_env.num_agents):
+            if c_env.slot_for_color[s] == p:
+                slot = s
+                break
+        if slot == -1:
+            slot = p
+            
+        c_reward = ctypes.c_float.from_address(c_env.reward_ptr[slot]).value
+        c_terminal = ctypes.c_float.from_address(c_env.terminal_ptr[slot]).value
+        
+        # Check expected C reward if provided, otherwise fallback to mapped py_reward
+        expected_c_rewards = config.get("expected_c_rewards") if config else None
+        if expected_c_rewards is not None:
+            expected_c = expected_c_rewards[p]
+        else:
+            if py_reward == 1:
+                expected_c = 1.0
+            elif py_reward == -1:
+                expected_c = 0.0
+            else:
+                expected_c = 0.0
+            
+        assert math.isclose(c_reward, expected_c, abs_tol=1e-5), (
+            f"Reward mismatch for agent {p}: expected {expected_c}, got C={c_reward} (Py={py_reward})"
+        )
+        expected_terminal = 1.0 if py_status == "DONE" else 0.0
+        assert math.isclose(c_terminal, expected_terminal, abs_tol=1e-5), (
+            f"Terminal mismatch for agent {p}: Py_status={py_status}, C_terminal={c_terminal}"
+        )
+        
+    return new_state, c_env
+
+
+def test_custom_scenarios_parity(lib):
+    print("Running original unit test scenario parity suite ...")
+    from types import SimpleNamespace
+    from kaggle_environments.envs.orbit_wars.orbit_wars import interpreter
+    
+    def assert_planet(py_obs, c_env, id, owner, ships):
+        py_p = next(p for p in py_obs.planets if p[0] == id)
+        assert py_p[1] == owner, f"Python Planet {id} owner mismatch: expected {owner}, got {py_p[1]}"
+        assert py_p[5] == ships, f"Python Planet {id} ships mismatch: expected {ships}, got {py_p[5]}"
+        
+        found = False
+        for idx in range(c_env.num_planets):
+            cp = c_env.planets[idx]
+            if cp.active and cp.id == id:
+                assert cp.owner == owner, f"C Planet {id} owner mismatch: expected {owner}, got {cp.owner}"
+                assert cp.ships == ships, f"C Planet {id} ships mismatch: expected {ships}, got {cp.ships}"
+                found = True
+                break
+        assert found, f"Planet {id} not found in C environment"
+
+    def assert_fleet_count(state, c_env, count):
+        assert len(state[0].observation.fleets) == count, f"Python fleet count expected {count}, got {len(state[0].observation.fleets)}"
+        assert len([f for f in c_env.fleets if f.active]) == count, f"C active fleet count expected {count}"
+
+    def assert_rewards(state, c_env, p0_reward, p1_reward, status):
+        assert state[0].reward == p0_reward
+        assert state[1].reward == p1_reward
+        assert state[0].status == status
+
+    def assert_rewards_4p(state, c_env, p0_reward, p1_reward, p2_reward, p3_reward, status):
+        assert state[0].reward == p0_reward
+        assert state[1].reward == p1_reward
+        assert state[2].reward == p2_reward
+        assert state[3].reward == p3_reward
+        assert state[0].status == status
+
+    scenarios = [
+        {
+            "name": "combat_resolution_user_example",
+            "num_agents": 4,
+            "planets": [[0, -1, 80.0, 80.0, 5.0, 10, 0]],
+            "fleets": [
+                [0, 0, 76.0, 80.0, 0.0, 1, 41],
+                [1, 1, 76.0, 80.0, 0.0, 2, 20],
+                [2, 1, 76.0, 80.0, 0.0, 2, 20],
+                [3, 2, 76.0, 80.0, 0.0, 3, 42],
+            ],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 5.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5, 0.5, 0.5]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=-1, ships=9),
+                assert_fleet_count(state, c_env, 0)
+            ]
+        },
+        {
+            "name": "fleet_does_not_tunnel_through_rotating_planet",
+            "num_agents": 2,
+            "planets": [[0, -1, 50.0, 52.0, 1.0, 10, 0]],
+            "fleets": [[0, 0, 49.0, 50.0, 0.0, 1, 1000]],
+            "step": 1,
+            "angular_velocity": math.pi,
+            "config": {"shipSpeed": 2.0, "episodeSteps": 500.0, "cometSpeed": 4.0},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=990),
+                assert_fleet_count(state, c_env, 0)
+            ]
+        },
+        {
+            "name": "rewards_set_at_max_steps",
+            "num_agents": 2,
+            "planets": [
+                [0, 0, 80.0, 80.0, 3.0, 50, 1],
+                [1, 1, 20.0, 20.0, 3.0, 30, 1],
+            ],
+            "fleets": [],
+            "step": 498,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_rewards(state, c_env, 1, -1, "DONE")
+            ]
+        },
+        {
+            "name": "reward_elimination_winner_and_loser",
+            "num_agents": 2,
+            "planets": [
+                [0, 0, 80.0, 80.0, 3.0, 50, 1],
+            ],
+            "fleets": [],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_rewards(state, c_env, 1, -1, "DONE")
+            ]
+        },
+        {
+            "name": "reward_elimination_via_fleets_only",
+            "num_agents": 2,
+            "planets": [
+                [0, 0, 80.0, 80.0, 3.0, 50, 1],
+            ],
+            "fleets": [
+                [0, 1, 30.0, 30.0, 0.0, 99, 10],
+            ],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_rewards(state, c_env, 0, 0, "ACTIVE")
+            ]
+        },
+        {
+            "name": "reward_tie_at_max_steps",
+            "num_agents": 2,
+            "planets": [
+                [0, 0, 80.0, 80.0, 3.0, 30, 1],
+                [1, 1, 20.0, 20.0, 3.0, 30, 1],
+            ],
+            "fleets": [],
+            "step": 498,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5]},
+            "asserts": lambda state, c_env: [
+                assert_rewards(state, c_env, 1, 1, "DONE")
+            ]
+        },
+        {
+            "name": "reward_all_eliminated",
+            "num_agents": 2,
+            "planets": [
+                [0, -1, 80.0, 80.0, 3.0, 50, 1],
+            ],
+            "fleets": [],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5]},
+            "asserts": lambda state, c_env: [
+                assert_rewards(state, c_env, -1, -1, "DONE")
+            ]
+        },
+        {
+            "name": "reward_4_player_elimination",
+            "num_agents": 4,
+            "planets": [
+                [0, 2, 80.0, 80.0, 3.0, 40, 1],
+            ],
+            "fleets": [],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.0, 0.0, 1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_rewards_4p(state, c_env, -1, -1, 1, -1, "DONE")
+            ]
+        },
+        {
+            "name": "reward_includes_fleet_ships",
+            "num_agents": 2,
+            "planets": [
+                [0, 0, 80.0, 80.0, 3.0, 10, 1],
+                [1, 1, 20.0, 20.0, 3.0, 30, 1],
+            ],
+            "fleets": [
+                [0, 0, 50.0, 30.0, 0.0, 0, 50],
+            ],
+            "step": 498,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_rewards(state, c_env, 1, -1, "DONE")
+            ]
+        },
+        {
+            "name": "fleet_removed_when_hitting_sun",
+            "num_agents": 2,
+            "planets": [[0, 0, 80.0, 50.0, 3.0, 50, 1]],
+            "fleets": [[0, 0, 60.0, 50.0, math.pi, 0, 10]],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_fleet_count(state, c_env, 0)
+            ]
+        },
+        {
+            "name": "fleet_removed_when_leaving_board",
+            "num_agents": 2,
+            "planets": [[0, 0, 80.0, 50.0, 3.0, 50, 1]],
+            "fleets": [[0, 0, 99.5, 50.0, 0.0, 0, 10]],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_fleet_count(state, c_env, 0)
+            ]
+        },
+        {
+            "name": "fleet_survives_inside_board",
+            "num_agents": 2,
+            "planets": [[0, 0, 80.0, 80.0, 3.0, 50, 1]],
+            "fleets": [[0, 0, 50.0, 30.0, 0.0, 0, 10]],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_fleet_count(state, c_env, 1)
+            ]
+        },
+        {
+            "name": "fast_fleet_hits_planet_before_leaving_board",
+            "num_agents": 2,
+            "planets": [[0, 1, 98.0, 50.0, 2.0, 50, 1]],
+            "fleets": [[0, 0, 95.0, 50.0, 0.0, 99, 1000]],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=1000 - 51),
+                assert_fleet_count(state, c_env, 0)
+            ]
+        },
+        {
+            "name": "fast_fleet_hits_planet_before_sun",
+            "num_agents": 2,
+            "planets": [[0, 1, 62.0, 50.0, 2.0, 50, 1]],
+            "fleets": [[0, 0, 65.0, 50.0, math.pi, 99, 1000]],
+            "step": 1,
+            "angular_velocity": 0.0,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=1000 - 51),
+                assert_fleet_count(state, c_env, 0)
+            ]
+        },
+        {
+            "name": "combat_simple_capture",
+            "num_agents": 2,
+            "planets": [[0, -1, 80.0, 50.0, 3.0, 10, 1]],
+            "fleets": [[0, 0, 76.0, 50.0, 0.0, 99, 30]],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=20)
+            ]
+        },
+        {
+            "name": "combat_simple_reinforce",
+            "num_agents": 2,
+            "planets": [[0, 0, 80.0, 50.0, 3.0, 10, 1]],
+            "fleets": [[0, 0, 76.0, 50.0, 0.0, 99, 25]],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=36)
+            ]
+        },
+        {
+            "name": "combat_attacker_insufficient",
+            "num_agents": 2,
+            "planets": [[0, -1, 80.0, 50.0, 3.0, 20, 1]],
+            "fleets": [[0, 0, 76.0, 50.0, 0.0, 99, 5]],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=-1, ships=15)
+            ]
+        },
+        {
+            "name": "combat_two_attackers_winner_captures",
+            "num_agents": 2,
+            "planets": [[0, -1, 80.0, 50.0, 3.0, 10, 1]],
+            "fleets": [
+                [0, 0, 76.0, 50.0, 0.0, 99, 50],
+                [1, 1, 76.0, 50.0, 0.0, 99, 30],
+            ],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=10)
+            ]
+        },
+        {
+            "name": "combat_two_attackers_tie_all_destroyed",
+            "num_agents": 2,
+            "planets": [[0, -1, 80.0, 50.0, 3.0, 10, 1]],
+            "fleets": [
+                [0, 0, 76.0, 50.0, 0.0, 99, 30],
+                [1, 1, 76.0, 50.0, 0.0, 99, 30],
+            ],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=-1, ships=10)
+            ]
+        },
+        {
+            "name": "combat_winner_reinforces_own_planet",
+            "num_agents": 2,
+            "planets": [[0, 0, 80.0, 50.0, 3.0, 15, 1]],
+            "fleets": [
+                [0, 0, 76.0, 50.0, 0.0, 99, 40],
+                [1, 1, 76.0, 50.0, 0.0, 99, 25],
+            ],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=31)
+            ]
+        },
+        {
+            "name": "combat_winner_attacks_enemy_planet",
+            "num_agents": 3,
+            "planets": [[0, 1, 80.0, 50.0, 3.0, 5, 1]],
+            "fleets": [
+                [0, 0, 76.0, 50.0, 0.0, 99, 50],
+                [1, 2, 76.0, 50.0, 0.0, 99, 20],
+            ],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=24)
+            ]
+        },
+        {
+            "name": "combat_multiple_fleets_same_owner",
+            "num_agents": 2,
+            "planets": [[0, -1, 80.0, 50.0, 3.0, 10, 1]],
+            "fleets": [
+                [0, 0, 76.0, 50.0, 0.0, 99, 20],
+                [1, 0, 76.0, 50.0, 0.0, 99, 15],
+            ],
+            "step": 1,
+            "angular_velocity": 0.01,
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "asserts": lambda state, c_env: [
+                assert_planet(state[0].observation, c_env, id=0, owner=0, ships=25)
+            ]
+        }
+    ]
+
+    for sc in scenarios:
+        name = sc["name"]
+        print(f"  - Testing scenario: {name} ...")
+        
+        # 1. Run single step check
+        py_state, c_env = run_parity_step_for_scenario(
+            lib, 
+            sc["planets"], 
+            sc["fleets"], 
+            num_agents=sc["num_agents"],
+            step=sc["step"],
+            angular_velocity=sc["angular_velocity"],
+            config=sc.get("config")
+        )
+        
+        # Execute scenario specific assertions
+        sc["asserts"](py_state, c_env)
+        
+        # 2. Run a 5-step rollout from this mock state (if not already completed/DONE)
+        if py_state[0].status == "ACTIVE":
+            env = SimpleNamespace(
+                configuration=SimpleNamespace(
+                    shipSpeed=sc.get("config", {}).get("shipSpeed", 6.0),
+                    episodeSteps=sc.get("config", {}).get("episodeSteps", 500.0),
+                    cometSpeed=sc.get("config", {}).get("cometSpeed", 4.0)
+                ),
+                done=False,
+            )
+            for r_step in range(1, 6):
+                # Apply simple actions (e.g. launch half-ships from owned planets)
+                actions = []
+                for p in range(sc["num_agents"]):
+                    agent_obs = py_state[p].observation
+                    moves = []
+                    for planet in agent_obs.planets:
+                        if planet[1] == p and planet[5] > 10:
+                            # launch towards center
+                            angle = (r_step * 0.17 + p * 0.5) % (2.0 * math.pi)
+                            ships = planet[5] // 2
+                            moves.append([planet[0], angle, ships])
+                    actions.append(moves[:OW_MAX_ACTIONS_PER_PLAYER])
+                
+                # Apply to C raw actions
+                for p in range(sc["num_agents"]):
+                    py_state[p].action = actions[p]
+                    c_env.num_raw_actions[p] = len(actions[p])
+                    for idx, move in enumerate(actions[p]):
+                        c_env.raw_actions[p][idx].from_planet_id = move[0]
+                        c_env.raw_actions[p][idx].angle = move[1]
+                        c_env.raw_actions[p][idx].ships = move[2]
+                
+                # Step both
+                py_state = interpreter(py_state, env)
+                next_step = getattr(py_state[0].observation, "step", 0) + 1
+                for agent_state in py_state:
+                    agent_state.observation.step = next_step
+                lib.c_step_core(ctypes.byref(c_env))
+                
+                # Verify parity
+                assert_state_parity(sc["step"] + r_step, py_state[0].observation, c_env)
+                
+                # Verify rewards and status
+                for p in range(sc["num_agents"]):
+                    py_reward = py_state[p].reward
+                    py_status = py_state[p].status
+                    
+                    slot = -1
+                    for s in range(c_env.num_agents):
+                        if c_env.slot_for_color[s] == p:
+                            slot = s
+                            break
+                    if slot == -1:
+                        slot = p
+                        
+                    c_reward = ctypes.c_float.from_address(c_env.reward_ptr[slot]).value
+                    c_terminal = ctypes.c_float.from_address(c_env.terminal_ptr[slot]).value
+                    
+                    expected_c_rewards = sc.get("config", {}).get("expected_c_rewards")
+                    if expected_c_rewards is not None:
+                        expected_c = expected_c_rewards[p]
+                    else:
+                        if py_reward == 1:
+                            expected_c = 1.0
+                        elif py_reward == -1:
+                            expected_c = 0.0
+                        else:
+                            expected_c = 0.0
+                        
+                    assert math.isclose(c_reward, expected_c, abs_tol=1e-5), (
+                        f"Rollout step {r_step} Reward mismatch for agent {p}: expected {expected_c}, got C={c_reward} (Py={py_reward})"
+                    )
+                    expected_terminal = 1.0 if py_status == "DONE" else 0.0
+                    assert math.isclose(c_terminal, expected_terminal, abs_tol=1e-5), (
+                        f"Rollout step {r_step} Terminal mismatch for agent {p}: Py_status={py_status}, C_terminal={c_terminal}"
+                    )
+                
+                if py_state[0].status == "DONE":
+                    break
+
+    print("  ✓ All custom scenario parity tests passed.")
+
+
+def run_interpreter_rollout_parity(lib, py_state, c_env, num_agents, ship_speed=6.0, episode_steps=500.0, comet_speed=4.0):
+    from types import SimpleNamespace
+    from kaggle_environments.envs.orbit_wars.orbit_wars import interpreter
+    
+    env = SimpleNamespace(
+        configuration=SimpleNamespace(
+            shipSpeed=ship_speed,
+            episodeSteps=episode_steps,
+            cometSpeed=comet_speed
+        ),
+        done=False,
+    )
+    
+    for r_step in range(1, 6):
+        # Generate actions
+        actions = []
+        for p in range(num_agents):
+            agent_obs = py_state[p].observation
+            moves = []
+            for planet in agent_obs.planets:
+                if planet[1] == p and planet[5] > 10:
+                    angle = (r_step * 0.17 + p * 0.5) % (2.0 * math.pi)
+                    ships = planet[5] // 2
+                    moves.append([planet[0], angle, ships])
+            actions.append(moves[:OW_MAX_ACTIONS_PER_PLAYER])
+            
+        # Inject into Python
+        for p in range(num_agents):
+            py_state[p].action = actions[p]
+            
+        # Inject into C
+        for p in range(num_agents):
+            c_env.num_raw_actions[p] = len(actions[p])
+            for idx, move in enumerate(actions[p]):
+                c_env.raw_actions[p][idx].from_planet_id = move[0]
+                c_env.raw_actions[p][idx].angle = move[1]
+                c_env.raw_actions[p][idx].ships = move[2]
+                
+        # Step Python
+        py_state = interpreter(py_state, env)
+        next_step = getattr(py_state[0].observation, "step", 0) + 1
+        for agent_state in py_state:
+            agent_state.observation.step = next_step
+            
+        # Step C
+        lib.c_step_core(ctypes.byref(c_env))
+        
+        # Verify state parity
+        assert_state_parity(next_step, py_state[0].observation, c_env)
+
+
+def test_symmetry_parity(lib, seed):
+    print(f"Running symmetry parity test on seed {seed} ...")
+    kaggle_env = make("orbit_wars", configuration={"seed": seed, "episodeSteps": 500})
+    state = kaggle_env.reset()
+    obs = state[0].observation
+    
+    # Check Python symmetry
+    planets = obs.planets
+    assert len(planets) >= 4, f"Expected >= 4 planets, got {len(planets)}"
+    assert len(planets) % 4 == 0, f"Expected planets count to be multiple of 4, got {len(planets)}"
+    for i in range(0, len(planets), 4):
+        p0 = planets[i]
+        p3 = planets[i + 3]
+        assert math.isclose(p0[2] + p3[2], 100.0, abs_tol=1e-5), f"Symmetry X mismatch: {p0[2]} and {p3[2]}"
+        assert math.isclose(p0[3] + p3[3], 100.0, abs_tol=1e-5), f"Symmetry Y mismatch: {p0[3]} and {p3[3]}"
+        assert p0[4] == p3[4], f"Radius mismatch: {p0[4]} and {p3[4]}"
+
+    # Setup C
+    c_env = OrbitWarsStruct()
+    ctypes.memset(ctypes.byref(c_env), 0, ctypes.sizeof(c_env))
+    lib.init(ctypes.byref(c_env))
+    
+    obs_buf = (ctypes.c_float * (OW_OBS_SIZE * 4))()
+    action_buf = (ctypes.c_float * (3 * 4))()
+    reward_buf = (ctypes.c_float * 4)()
+    terminal_buf = (ctypes.c_float * 4)()
+    for i in range(4):
+        c_env.obs_ptr[i] = ctypes.addressof(obs_buf) + i * OW_OBS_SIZE * 4
+        c_env.action_ptr[i] = ctypes.addressof(action_buf) + i * 3 * 4
+        c_env.reward_ptr[i] = ctypes.addressof(reward_buf) + i * 4
+        c_env.terminal_ptr[i] = ctypes.addressof(terminal_buf) + i * 4
+
+    copy_state_py_to_c(obs, c_env, num_agents=2)
+
+    # Check C symmetry
+    assert c_env.num_planets == len(planets)
+    for i in range(0, c_env.num_planets, 4):
+        cp0 = c_env.planets[i]
+        cp3 = c_env.planets[i + 3]
+        assert math.isclose(cp0.x + cp3.x, 100.0, abs_tol=1e-5)
+        assert math.isclose(cp0.y + cp3.y, 100.0, abs_tol=1e-5)
+        assert cp0.radius == cp3.radius
+
+    # Parity check at step 0
+    assert_state_parity(0, obs, c_env)
+
+    # Rollout check
+    # Wrap in list so it behaves like py_state in run_interpreter_rollout_parity
+    from types import SimpleNamespace
+    py_state = [
+        SimpleNamespace(observation=obs, action=[], status="ACTIVE", reward=0),
+        SimpleNamespace(observation=state[1].observation, action=[], status="ACTIVE", reward=0)
+    ]
+    run_interpreter_rollout_parity(lib, py_state, c_env, num_agents=2, ship_speed=6.0)
+    print(f"  ✓ Symmetry parity passed on seed {seed}.")
+
+
+def test_4_player_initialization_parity(lib, seed):
+    print(f"Running 4-player initialization parity test on seed {seed} ...")
+    from types import SimpleNamespace
+    from kaggle_environments.envs.orbit_wars.orbit_wars import interpreter
+    
+    state = [
+        SimpleNamespace(
+            observation=SimpleNamespace(step=0),
+            action=[],
+            status="ACTIVE",
+            reward=0,
+        )
+    ]
+    for i in range(1, 4):
+        state.append(
+            SimpleNamespace(
+                observation=SimpleNamespace(player=i),
+                action=[],
+                status="ACTIVE",
+                reward=0,
+            )
+        )
+        
+    env = SimpleNamespace(
+        configuration=SimpleNamespace(shipSpeed=6.0, episodeSteps=500.0, cometSpeed=4.0, seed=seed),
+        done=False,
+    )
+    
+    py_state = interpreter(state, env)
+    for agent_state in py_state:
+        agent_state.observation.step = 1
+    obs = py_state[0].observation
+    planets = obs.planets
+    
+    # Assert Python ownership
+    owned = [p for p in planets if p[1] != -1]
+    assert len(owned) == 4, f"Expected 4 owned home planets, got {len(owned)}"
+    owners = set(p[1] for p in owned)
+    assert owners == {0, 1, 2, 3}, f"Expected owners {0,1,2,3}, got {owners}"
+    
+    # Setup C
+    c_env = OrbitWarsStruct()
+    ctypes.memset(ctypes.byref(c_env), 0, ctypes.sizeof(c_env))
+    lib.init(ctypes.byref(c_env))
+    
+    obs_buf = (ctypes.c_float * (OW_OBS_SIZE * 4))()
+    action_buf = (ctypes.c_float * (3 * 4))()
+    reward_buf = (ctypes.c_float * 4)()
+    terminal_buf = (ctypes.c_float * 4)()
+    for i in range(4):
+        c_env.obs_ptr[i] = ctypes.addressof(obs_buf) + i * OW_OBS_SIZE * 4
+        c_env.action_ptr[i] = ctypes.addressof(action_buf) + i * 3 * 4
+        c_env.reward_ptr[i] = ctypes.addressof(reward_buf) + i * 4
+        c_env.terminal_ptr[i] = ctypes.addressof(terminal_buf) + i * 4
+
+    copy_state_py_to_c(obs, c_env, num_agents=4)
+    c_env.max_steps = 500 - 2
+    c_env.prevent_reset = 1
+    
+    # Assert C ownership
+    c_owned = [c_env.planets[i] for i in range(c_env.num_planets) if c_env.planets[i].owner != -1]
+    assert len(c_owned) == 4
+    c_owners = set(cp.owner for cp in c_owned)
+    assert c_owners == {0, 1, 2, 3}
+    
+    # Parity check
+    assert_state_parity(1, obs, c_env)
+    
+    # Rollout check
+    run_interpreter_rollout_parity(lib, py_state, c_env, num_agents=4, ship_speed=6.0)
+    print(f"  ✓ 4-player initialization parity passed on seed {seed}.")
+
+
+def test_4p_home_planets_rotationally_symmetric_parity(lib, seed):
+    print(f"Running 4p home planets rotational symmetry parity test on seed {seed} ...")
+    from types import SimpleNamespace
+    from kaggle_environments.envs.orbit_wars.orbit_wars import interpreter
+    
+    state = [
+        SimpleNamespace(
+            observation=SimpleNamespace(step=0),
+            action=[],
+            status="ACTIVE",
+            reward=0,
+        )
+    ]
+    for i in range(1, 4):
+        state.append(
+            SimpleNamespace(
+                observation=SimpleNamespace(player=i),
+                action=[],
+                status="ACTIVE",
+                reward=0,
+            )
+        )
+        
+    env = SimpleNamespace(
+        configuration=SimpleNamespace(shipSpeed=6.0, episodeSteps=500.0, cometSpeed=4.0, seed=seed),
+        done=False,
+    )
+    
+    py_state = interpreter(state, env)
+    for agent_state in py_state:
+        agent_state.observation.step = 1
+    obs = py_state[0].observation
+    planets = obs.planets
+    
+    # Assert Python rotational symmetry
+    owned = [p for p in planets if p[1] != -1]
+    assert len(owned) == 4
+    positions = [(p[2], p[3]) for p in owned]
+    for x, y in positions:
+        rx = 50.0 - (y - 50.0)
+        ry = 50.0 + (x - 50.0)
+        assert any(math.isclose(rx, px, abs_tol=1e-5) and math.isclose(ry, py, abs_tol=1e-5) for px, py in positions), \
+            f"Home planets set not 4-fold rotationally symmetric: {positions}"
+            
+    # Setup C
+    c_env = OrbitWarsStruct()
+    ctypes.memset(ctypes.byref(c_env), 0, ctypes.sizeof(c_env))
+    lib.init(ctypes.byref(c_env))
+    
+    obs_buf = (ctypes.c_float * (OW_OBS_SIZE * 4))()
+    action_buf = (ctypes.c_float * (3 * 4))()
+    reward_buf = (ctypes.c_float * 4)()
+    terminal_buf = (ctypes.c_float * 4)()
+    for i in range(4):
+        c_env.obs_ptr[i] = ctypes.addressof(obs_buf) + i * OW_OBS_SIZE * 4
+        c_env.action_ptr[i] = ctypes.addressof(action_buf) + i * 3 * 4
+        c_env.reward_ptr[i] = ctypes.addressof(reward_buf) + i * 4
+        c_env.terminal_ptr[i] = ctypes.addressof(terminal_buf) + i * 4
+
+    copy_state_py_to_c(obs, c_env, num_agents=4)
+    c_env.max_steps = 500 - 2
+    c_env.prevent_reset = 1
+    
+    # Assert C rotational symmetry
+    c_owned = [c_env.planets[i] for i in range(c_env.num_planets) if c_env.planets[i].owner != -1]
+    assert len(c_owned) == 4
+    c_positions = [(cp.x, cp.y) for cp in c_owned]
+    for x, y in c_positions:
+        rx = 50.0 - (y - 50.0)
+        ry = 50.0 + (x - 50.0)
+        assert any(math.isclose(rx, px, abs_tol=1e-5) and math.isclose(ry, py, abs_tol=1e-5) for px, py in c_positions)
+        
+    # Parity check
+    assert_state_parity(1, obs, c_env)
+    
+    # Rollout check
+    run_interpreter_rollout_parity(lib, py_state, c_env, num_agents=4, ship_speed=6.0)
+    print(f"  ✓ 4p home planets rotational symmetry parity passed on seed {seed}.")
+
+
+def test_comet_spawn_keeps_initial_planets_synced_parity(lib, seed):
+    print(f"Running comet spawn sync parity test on seed {seed} ...")
+    from types import SimpleNamespace
+    from kaggle_environments.envs.orbit_wars.orbit_wars import interpreter
+    
+    import random
+    random.seed(seed)
+    
+    state = [
+        SimpleNamespace(
+            observation=SimpleNamespace(step=0),
+            action=[],
+            status="ACTIVE",
+            reward=0,
+        )
+    ]
+    for i in range(1, 4):
+        state.append(
+            SimpleNamespace(
+                observation=SimpleNamespace(player=i),
+                action=[],
+                status="ACTIVE",
+                reward=0,
+            )
+        )
+        
+    env = SimpleNamespace(
+        configuration=SimpleNamespace(shipSpeed=6.0, episodeSteps=120.0, cometSpeed=4.0, seed=seed),
+        done=False,
+    )
+    
+    py_state = interpreter(state, env)
+    for agent_state in py_state:
+        agent_state.observation.step = 1
+        
+    # Setup C
+    c_env = OrbitWarsStruct()
+    ctypes.memset(ctypes.byref(c_env), 0, ctypes.sizeof(c_env))
+    lib.init(ctypes.byref(c_env))
+    
+    obs_buf = (ctypes.c_float * (OW_OBS_SIZE * 4))()
+    action_buf = (ctypes.c_float * (3 * 4))()
+    reward_buf = (ctypes.c_float * 4)()
+    terminal_buf = (ctypes.c_float * 4)()
+    for i in range(4):
+        c_env.obs_ptr[i] = ctypes.addressof(obs_buf) + i * OW_OBS_SIZE * 4
+        c_env.action_ptr[i] = ctypes.addressof(action_buf) + i * 3 * 4
+        c_env.reward_ptr[i] = ctypes.addressof(reward_buf) + i * 4
+        c_env.terminal_ptr[i] = ctypes.addressof(terminal_buf) + i * 4
+
+    copy_state_py_to_c(py_state[0].observation, c_env, num_agents=4)
+    c_env.max_steps = 120 - 2
+    c_env.prevent_reset = 1
+    
+    for r_step in range(1, 50):
+        py_state = interpreter(py_state, env)
+        next_step = getattr(py_state[0].observation, "step", 0) + 1
+        for agent_state in py_state:
+            agent_state.observation.step = next_step
+            
+        lib.c_step_core(ctypes.byref(c_env))
+        
+        if next_step in COMET_SPAWN_STEPS:
+            copy_comets_py_to_c(py_state[0].observation, c_env)
+            lib.test_compute_observations(ctypes.byref(c_env))
+            
+        assert_state_parity(next_step, py_state[0].observation, c_env)
+        
+    obs0 = py_state[0].observation
+    
+    # Assert Python comet sync
+    assert obs0.comets, "Expected comets to have spawned by step 50"
+    assert len(obs0.initial_planets) == len(obs0.planets)
+    for other_state in py_state[1:]:
+        other_obs = other_state.observation
+        assert obs0.comet_planet_ids == other_obs.comet_planet_ids
+        assert obs0.initial_planets == other_obs.initial_planets
+        
+    # Assert C comet sync
+    c_comets_count = sum(1 for cp in c_env.planets if cp.active and cp.is_comet)
+    assert c_comets_count > 0, "C comets count should be > 0"
+    assert c_env.num_planets == len(obs0.planets)
+    
+    # Rollout check
+    run_interpreter_rollout_parity(lib, py_state, c_env, num_agents=4, ship_speed=6.0)
+    print(f"  ✓ Comet spawn sync parity passed on seed {seed}.")
+
+
 # ------------------------------------------------------------------ #
 # Main Entry Point
 # ------------------------------------------------------------------ #
@@ -715,7 +1769,15 @@ def main():
     )
     print("✓ Structure size match check passed.")
     
-    # 3. Run single-step parity tests (1v1 mode)
+    # 3. Run custom scenarios parity tests
+    try:
+        test_custom_scenarios_parity(lib)
+    except AssertionError as e:
+        print(f"✗ Custom scenario parity failed: {e}")
+        import traceback; traceback.print_exc()
+        sys.exit(1)
+
+    # 4. Run single-step parity tests (1v1 mode)
     for seed in [42, 101, 102, 103]:
         try:
             test_parity_single_step(lib, seed, num_agents=2)
@@ -723,12 +1785,24 @@ def main():
             print(f"✗ Single-step parity failed for seed {seed}: {e}")
             sys.exit(1)
             
-    # 4. Run rollout parity tests (1v1 mode)
+    # 5. Run rollout parity tests (1v1 mode)
     for seed in [42, 101, 102]:
         try:
             test_parity_rollout(lib, seed, num_agents=2)
         except AssertionError as e:
             print(f"✗ Rollout parity failed for seed {seed}: {e}")
+            sys.exit(1)
+            
+    # 6. Run new symmetry, 4-player initialization, and comet spawn parity tests
+    for seed in [0, 42, 101]:
+        try:
+            test_symmetry_parity(lib, seed)
+            test_4_player_initialization_parity(lib, seed)
+            test_4p_home_planets_rotationally_symmetric_parity(lib, seed)
+            test_comet_spawn_keeps_initial_planets_synced_parity(lib, seed)
+        except AssertionError as e:
+            print(f"✗ New parity test failed for seed {seed}: {e}")
+            import traceback; traceback.print_exc()
             sys.exit(1)
             
     print("\n" + "=" * 60)

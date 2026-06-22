@@ -4,7 +4,7 @@ Orbit Wars — Colab Test Runner
 
 Usage (from local machine):
     colab new
-    colab exec -f colab_test.py 2>&1 | tee colab_output.log
+    colab exec -f colab_test.py 2>&1 | tee colab_test_run.log
     colab stop
 """
 
@@ -19,6 +19,24 @@ def run(cmd, **kw):
     if "shell" not in kw:
         kw["shell"] = isinstance(cmd, str)
     return subprocess.run(cmd, check=True, **kw)
+
+
+def run_stream(args):
+    """Run a subprocess and stream stdout/stderr in real-time."""
+    print(f"\n$ {' '.join(args)}")
+    sys.stdout.flush()
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1
+    )
+    for line in process.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    process.wait()
+    return process.returncode
 
 
 print("=" * 60)
@@ -50,9 +68,9 @@ print("\n--- [3/5] Installing Python dependencies ---")
 try:
     run("curl -LsSf https://astral.sh/uv/install.sh | sh", shell=True)
     os.environ["PATH"] += os.pathsep + os.path.expanduser("~/.local/bin")
-    run("uv pip install --system pybind11 numpy rich 2>/dev/null || pip install pybind11 numpy rich", shell=True)
+    run("uv pip install --system pybind11 numpy rich kaggle-environments 2>/dev/null || pip install pybind11 numpy rich kaggle-environments", shell=True)
 except Exception:
-    run("pip install pybind11 numpy rich", shell=True)
+    run("pip install pybind11 numpy rich kaggle-environments", shell=True)
 
 # ------------------------------------------------------------------
 # 4. Build orbit_wars
@@ -66,10 +84,17 @@ print(f"Build completed in {build_time:.1f}s")
 # ------------------------------------------------------------------
 # 5. Run tests
 # ------------------------------------------------------------------
-print("\n--- [5/5] Running test suite ---")
+print("\n--- [5/5] Running test suites ---")
 t0 = time.time()
-result = subprocess.run([sys.executable, "tests/test_orbit_wars.py"])
+
+print("\n>>> Running Environment Test Suite (test_orbit_wars.py) <<<")
+code_env = run_stream([sys.executable, "tests/test_orbit_wars.py"])
+
+print("\n>>> Running Parity Test Suite (test_orbit_wars_parity.py) <<<")
+code_parity = run_stream([sys.executable, "tests/test_orbit_wars_parity.py"])
+
 test_time = time.time() - t0
+exit_code = 0 if (code_env == 0 and code_parity == 0) else 1
 
 # ------------------------------------------------------------------
 # Summary
@@ -77,11 +102,12 @@ test_time = time.time() - t0
 print("\n" + "=" * 60)
 print("SUMMARY")
 print("=" * 60)
-print(f"  Build time:     {build_time:.1f}s")
-print(f"  Test time:      {test_time:.1f}s")
-print(f"  Test exit code: {result.returncode}")
-print(f"  Status:         {'✅ ALL PASSED' if result.returncode == 0 else '❌ FAILED'}")
-print(f"  Finished:       {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+print(f"  Build time:        {build_time:.1f}s")
+print(f"  Test time:         {test_time:.1f}s")
+print(f"  Env Test Status:   {'✅ PASSED' if code_env == 0 else '❌ FAILED'}")
+print(f"  Parity Test Status: {'✅ PASSED' if code_parity == 0 else '❌ FAILED'}")
+print(f"  Overall Status:    {'✅ ALL PASSED' if exit_code == 0 else '❌ FAILED'}")
+print(f"  Finished:          {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
 print("=" * 60)
 
-sys.exit(result.returncode)
+sys.exit(exit_code)

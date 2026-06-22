@@ -3,9 +3,7 @@
 Orbit Wars — Colab Test Runner
 
 Usage (from local machine):
-    colab new
     colab exec -f colab_test.py 2>&1 | tee colab_test_run.log
-    colab stop
 """
 
 import subprocess
@@ -40,51 +38,37 @@ def run_stream(args):
 
 
 print("=" * 60)
-print("ORBIT WARS — PUFFERLIB COLAB TEST")
+print("ORBIT WARS — PUFFERLIB COLAB TEST RUNNER")
 print(f"Started: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
 print("=" * 60)
 
-# ------------------------------------------------------------------
-# 1. Clone repository
-# ------------------------------------------------------------------
-print("\n--- [1/5] Cloning repository ---")
-if os.path.exists("pufferlib"):
-    run("rm -rf pufferlib")
-run("git clone https://github.com/eig1n/PufferLib-OrbitWars.git pufferlib")
+# Navigate to pufferlib directory
+if not os.path.exists("pufferlib"):
+    print("Error: 'pufferlib' directory not found! Run colab_setup.py first.")
+    sys.exit(1)
+
 os.chdir("pufferlib")
+
+# ------------------------------------------------------------------
+# 1. Pull latest code changes
+# ------------------------------------------------------------------
+print("\n--- [1/3] Pulling latest code changes from GitHub ---")
+run("git pull")
 run("git log --oneline -5")
 
 # ------------------------------------------------------------------
-# 2. Install system dependencies
+# 2. Build orbit_wars
 # ------------------------------------------------------------------
-print("\n--- [2/5] Installing system dependencies ---")
-run("apt-get update -qq && apt-get install -y -qq clang libomp-dev > /dev/null 2>&1", shell=True)
-
-# ------------------------------------------------------------------
-# 3. Install Python dependencies
-# ------------------------------------------------------------------
-print("\n--- [3/5] Installing Python dependencies ---")
-# Try uv first, fall back to pip
-try:
-    run("curl -LsSf https://astral.sh/uv/install.sh | sh", shell=True)
-    os.environ["PATH"] += os.pathsep + os.path.expanduser("~/.local/bin")
-    run("uv pip install --system pybind11 numpy rich kaggle-environments 2>/dev/null || pip install pybind11 numpy rich kaggle-environments", shell=True)
-except Exception:
-    run("pip install pybind11 numpy rich kaggle-environments", shell=True)
-
-# ------------------------------------------------------------------
-# 4. Build orbit_wars
-# ------------------------------------------------------------------
-print("\n--- [4/5] Building orbit_wars environment ---")
+print("\n--- [2/3] Building orbit_wars environment ---")
 t0 = time.time()
 run(["bash", "build.sh", "orbit_wars", "--cpu"])
 build_time = time.time() - t0
 print(f"Build completed in {build_time:.1f}s")
 
 # ------------------------------------------------------------------
-# 5. Run tests
+# 3. Run tests
 # ------------------------------------------------------------------
-print("\n--- [5/5] Running test suites ---")
+print("\n--- [3/3] Running test suites ---")
 t0 = time.time()
 
 print("\n>>> Running Environment Test Suite (test_orbit_wars.py) <<<")

@@ -401,7 +401,7 @@ def compute_reference_observation(c_env, player_id, num_agents):
             features[idx + 1] = cp.x / OW_BOARD_SIZE
             features[idx + 2] = cp.y / OW_BOARD_SIZE
             features[idx + 3] = cp.radius / 5.0
-            features[idx + 4] = float(cp.ships) / 100.0
+            features[idx + 4] = float(cp.ships) / 1000.0
             features[idx + 5] = float(cp.production) / 5.0
             features[idx + 6] = 1.0
         idx += 7
@@ -422,7 +422,7 @@ def compute_reference_observation(c_env, player_id, num_agents):
             features[idx + 1] = cf.x / OW_BOARD_SIZE
             features[idx + 2] = cf.y / OW_BOARD_SIZE
             features[idx + 3] = cf.angle / (2.0 * math.pi)
-            features[idx + 4] = float(cf.ships) / 100.0
+            features[idx + 4] = float(cf.ships) / 1000.0
             features[idx + 5] = 1.0
         idx += 6
         

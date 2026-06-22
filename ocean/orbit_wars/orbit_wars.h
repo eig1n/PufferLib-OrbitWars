@@ -599,7 +599,7 @@ static void ow_compute_observations(OrbitWars* env) {
                 obs[idx++] = pl->x / OW_BOARD_SIZE;
                 obs[idx++] = pl->y / OW_BOARD_SIZE;
                 obs[idx++] = pl->radius / 5.0f;
-                obs[idx++] = (float)pl->ships / 100.0f;
+                obs[idx++] = (float)pl->ships / 1000.0f;
                 obs[idx++] = (float)pl->production / 5.0f;
                 obs[idx++] = 1.0f;
             } else {
@@ -620,7 +620,7 @@ static void ow_compute_observations(OrbitWars* env) {
                 obs[idx++] = fl->x / OW_BOARD_SIZE;
                 obs[idx++] = fl->y / OW_BOARD_SIZE;
                 obs[idx++] = fl->angle / (2.0f * M_PI);
-                obs[idx++] = (float)fl->ships / 100.0f;
+                obs[idx++] = (float)fl->ships / 1000.0f;
                 obs[idx++] = 1.0f;
             } else {
                 for (int ff = 0; ff < OW_FLEET_OBS_FEAT; ff++) obs[idx++] = 0.0f;
@@ -1113,10 +1113,20 @@ void c_step_core(OrbitWars* env) {
     /* Clear combat accumulator */
     memset(env->arriving_ships, 0, sizeof(env->arriving_ships));
 
+
     /* Increment step */
     env->current_step++;
 
-    /* Execute turn phases in order */
+    /* Execute turn phases in order 
+    this should be the right order as specified in original implementation:
+    1. Comet expiration: Remove comets that have left the board.
+    2. Comet spawning: Spawn new comet groups at designated steps.
+    3. Fleet launch: Process all player actions, creating new fleets.
+    4. Production: All owned planets (including comets) generate ships.
+    5. Fleet movement: Move all fleets along their headings. Check for out-of-bounds, sun collision, and planet collision. Fleets that hit planets are queued for combat.
+    6. Planet rotation & comet movement: Orbiting planets rotate, comets advance along their paths. Any fleet caught by a moving planet/comet is swept into combat with it.
+    7. Combat resolution: Resolve all queued planet combats. */
+    ow_phase_comet_expiration(env);
     ow_phase_comet_spawning(env);
     ow_phase_fleet_launch(env);
     ow_phase_production(env);

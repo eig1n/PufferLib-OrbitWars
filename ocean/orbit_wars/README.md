@@ -1,6 +1,6 @@
-# Orbit Wars: C vs. Python Technical Specification & Parity Guide
+# Orbit Wars: C vs. Python Technical Parity & Architecture Specification
 
-This guide details the structural layout, physics execution, random seed mapping, and verification commands for the fast C-based simulator (`ocean/orbit_wars/orbit_wars.h`, `binding.c`) in comparison to the original Python `kaggle_environments` Orbit Wars implementation (`orbit_wars.py`).
+This specification documents the structural layout, physics execution, random seed spaces, and observation/reward mapping of the high-performance C-based simulator (`ocean/orbit_wars/orbit_wars.h`, `binding.c`) in comparison to the original Python `kaggle_environments` Orbit Wars implementation (`orbit_wars.py`).
 
 ---
 
@@ -50,7 +50,53 @@ graph TD
 
 ---
 
-## 3. RNG Seed Space & Variation Parity
+## 3. Function-to-Function Correspondence
+
+The simulation logic in the C implementation matches the original Python codebase structure:
+
+| Python Function (`orbit_wars.py`) | C Function / Phase (`orbit_wars.h`) | Description |
+| :--- | :--- | :--- |
+| `generate_planets(rng)` | `ow_generate_map(env)` | Sets up the initial map of symmetric static and orbiting planets. |
+| `generate_comet_paths(...)` | `ow_generate_comet_path(env, idx)` | Simulates gravity deflection of 4 symmetric comet trajectories. |
+| `interpreter(...)` (Launch) | `ow_phase_fleet_launch(env)` | Spawns fleets at dynamic coordinates outside planets based on inputs. |
+| `interpreter(...)` (Production) | `ow_phase_production(env)` | Increments owned planets' ship counts by their production values. |
+| `interpreter(...)` (Swept Collision) | `ow_phase_fleet_movement(env)` | Simulates continuous swept-pair checks with moving planets/sun/comets. |
+| `interpreter(...)` (Movement) | `ow_phase_rotation_and_comets(env)`| Rotates orbiting planets and advances comet indexes. |
+| `interpreter(...)` (Combat) | `ow_phase_combat_resolution(env)` | Sums arriving fleets per planet to compute ownership transitions. |
+| `interpreter(...)` (Game Over) | `ow_check_game_over(env)` | Triggers terminal states on step limits or when only one agent remains. |
+
+---
+
+## 4. Observation & Reward Scaling
+
+To ensure stable gradient descents during reinforcement learning, PufferLib expects observations and rewards to reside in standardized, well-scaled bounds.
+
+### Observation Cast & Scaling Layout
+While internal physics use high-precision doubles, observations are cast to single-precision `float` when copying to the neural network memory buffer (`env->obs_ptr[a]`). All observations are scaled to fall within $[-1, 1]$ or $[0, 1]$:
+
+```c
+/* Extracts a 6484-float array of features per agent */
+obs[idx++] = pl->x / OW_BOARD_SIZE;                  // [0.0, 1.0] board positions
+obs[idx++] = pl->y / OW_BOARD_SIZE;
+obs[idx++] = pl->radius / 5.0f;                     // [0.2, 1.0] radius scaling
+obs[idx++] = (float)pl->ships / 100.0f;             // Normalizes ship densities
+obs[idx++] = (float)pl->production / 5.0f;          // Normalizes production rate
+obs[idx++] = fl->angle / (2.0f * M_PI);             // [0.0, 1.0] angle buckets
+obs[idx++] = env->angular_velocity / 0.05f;          // [0.5, 1.0] velocity ratio
+obs[idx++] = (float)env->current_step / 500.0f;     // [0.0, 1.0] time encoding
+obs[idx++] = (float)my_ships / 1000.0f;             // Normalizes total armies
+```
+
+### Reward Range Layout
+Rewards are sparse terminal outcomes calculated at the end of the episode and mapped between $[0, 1]$:
+* **Winner**: `1.0f`
+* **Tie/Draw**: `0.5f`
+* **Loser**: `0.0f`
+* **Intermediate steps**: `0.0f`
+
+---
+
+## 5. RNG Seed Space & Variation Parity
 
 * **Seed Range**: Python `kaggle_environments` Orbit Wars works with a 31-bit seed space ($2^{31}$ range). The C simulator uses standard `rand_r(unsigned int* seed)` which takes a 32-bit state pointer, covering the entire 31-bit seed range.
 * **Distribution Space**:
@@ -65,7 +111,7 @@ graph TD
 
 ---
 
-## 4. Rollout Parity Verification Setup
+## 6. Rollout Parity Verification Setup
 
 Can we feed the same initial conditions to both simulators and run them step-by-step to check if their states are identical?
 
@@ -81,7 +127,7 @@ Can we feed the same initial conditions to both simulators and run them step-by-
 
 ---
 
-## 5. Cheat Sheet: Build & Run Commands
+## 7. Cheat Sheet: Build & Run Commands
 
 Keep this list handy to build, test, and run the simulator without having to re-derive commands.
 

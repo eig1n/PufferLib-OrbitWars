@@ -29,9 +29,12 @@ FAIL = "\033[91m✗ FAIL\033[0m"
 def test_build():
     """Test 1: Build the orbit_wars environment."""
     print("\n[Test 1] Building orbit_wars with --cpu ...")
+    env = os.environ.copy()
+    venv_bin = os.path.join(PUFFERLIB_ROOT, ".venv", "bin")
+    env["PATH"] = f"{venv_bin}{os.path.pathsep}{env.get('PATH', '')}"
     result = subprocess.run(
         ["bash", "build.sh", "orbit_wars", "--cpu"],
-        capture_output=True, text=True, cwd=PUFFERLIB_ROOT
+        capture_output=True, text=True, cwd=PUFFERLIB_ROOT, env=env
     )
     if result.returncode != 0:
         print(f"  {FAIL}: Build failed")

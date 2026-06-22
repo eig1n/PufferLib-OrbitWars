@@ -21,14 +21,14 @@
  * Constants
  * ======================================================================== */
 
-#define OW_BOARD_SIZE       100.0f
-#define OW_SUN_X            50.0f
-#define OW_SUN_Y            50.0f
-#define OW_SUN_RADIUS       10.0f
-#define OW_MAX_SPEED        6.0f
-#define OW_COMET_SPEED      4.0f
+#define OW_BOARD_SIZE       100.0
+#define OW_SUN_X            50.0
+#define OW_SUN_Y            50.0
+#define OW_SUN_RADIUS       10.0
+#define OW_MAX_SPEED        6.0
+#define OW_COMET_SPEED      4.0
 #define OW_MAX_PLANETS      48
-#define OW_MAX_FLEETS       128
+#define OW_MAX_FLEETS       1024
 #define OW_MAX_COMET_GROUPS 5
 #define OW_MAX_STEPS        500
 #define OW_ROTATION_RADIUS_LIMIT 50.0f
@@ -41,14 +41,14 @@
 #define OW_COMET_PRODUCTION 1
 #define OW_FLEET_SPAWN_OFFSET 0.1f
 
-/* Observation layout: 48 planets × 7 features + 128 fleets × 6 features + 4 global */
+/* Observation layout: 48 planets × 7 features + 1024 fleets × 6 features + 4 global */
 #define OW_PLANET_OBS_FEAT  7
 #define OW_FLEET_OBS_FEAT   6
 #define OW_GLOBAL_OBS_FEAT  4
 #define OW_OBS_SIZE (OW_MAX_PLANETS * OW_PLANET_OBS_FEAT + \
                      OW_MAX_FLEETS * OW_FLEET_OBS_FEAT + \
                      OW_GLOBAL_OBS_FEAT)
-/* = 48*7 + 128*6 + 4 = 336 + 768 + 4 = 1108 */
+/* = 48*7 + 1024*6 + 4 = 336 + 6144 + 4 = 6484 */
 
 /* Action space: 3 multi-discrete dims */
 #define OW_NUM_ATNS          3
@@ -70,9 +70,9 @@ static const int OW_COMET_SPAWN_STEPS[] = {50, 150, 250, 350, 450};
 typedef struct {
     int id;
     int owner;       /* 0..3 = player, -1 = neutral */
-    float x;
-    float y;
-    float radius;
+    double x;
+    double y;
+    double radius;
     int ships;
     int production;
     int is_comet;
@@ -82,12 +82,12 @@ typedef struct {
 typedef struct {
     int id;
     int owner;
-    float x;
-    float y;
-    float angle;     /* direction of travel (radians) */
+    double x;
+    double y;
+    double angle;     /* direction of travel (radians) */
     int from_planet_id;
     int ships;
-    float speed;
+    double speed;
     int active;
 } FleetC;
 
@@ -95,14 +95,14 @@ typedef struct {
     int planet_ids[4];
     int path_index;
     int num_steps;
-    float paths_x[4][OW_COMET_PATH_LEN];
-    float paths_y[4][OW_COMET_PATH_LEN];
+    double paths_x[4][OW_COMET_PATH_LEN];
+    double paths_y[4][OW_COMET_PATH_LEN];
     int active;
 } CometGroupC;
 
 typedef struct {
     int from_planet_id;
-    float angle;
+    double angle;
     int ships;
 } RawActionC;
 
@@ -166,14 +166,14 @@ typedef struct {
     int num_raw_actions[OW_MAX_PLAYERS];
 
     /* Tracking */
-    float angular_velocity;
+    double angular_velocity;
     int next_fleet_id;
     int next_planet_id;
     int current_step;
 
     /* Planet rotation state */
-    float planet_angle[OW_MAX_PLANETS];
-    float planet_orbital_radius[OW_MAX_PLANETS];
+    double planet_angle[OW_MAX_PLANETS];
+    double planet_orbital_radius[OW_MAX_PLANETS];
     int planet_orbits[OW_MAX_PLANETS];   /* 1 = orbiting, 0 = static */
 
     /* Combat accumulator — zeroed each step, filled during movement/rotation */
@@ -202,8 +202,8 @@ static inline int ow_rand_range(unsigned int* rng, int lo, int hi) {
  * ======================================================================== */
 
 static inline float ow_dist(float x1, float y1, float x2, float y2) {
-    float dx = x2 - x1, dy = y2 - y1;
-    return sqrtf(dx * dx + dy * dy);
+    double dx = (double)x2 - (double)x1, dy = (double)y2 - (double)y1;
+    return (float)sqrt(dx * dx + dy * dy);
 }
 
 static inline float ow_clampf(float v, float lo, float hi) {
@@ -219,26 +219,51 @@ static inline float ow_clampf(float v, float lo, float hi) {
  */
 static float ow_segment_circle_t(float x1, float y1, float x2, float y2,
                                   float cx, float cy, float r) {
-    float dx = x2 - x1, dy = y2 - y1;
-    float fx = x1 - cx, fy = y1 - cy;
-    float a = dx * dx + dy * dy;
-    if (a < 1e-12f) {
+    double dx = (double)x2 - (double)x1, dy = (double)y2 - (double)y1;
+    double fx = (double)x1 - (double)cx, fy = (double)y1 - (double)cy;
+    double a = dx * dx + dy * dy;
+    if (a < 1e-15) {
         /* Zero-length segment: check if point is inside circle */
-        return (fx * fx + fy * fy <= r * r) ? 0.0f : -1.0f;
+        return ((fx * fx + fy * fy) <= (double)r * (double)r) ? 0.0f : -1.0f;
     }
-    float b = 2.0f * (fx * dx + fy * dy);
-    float c = fx * fx + fy * fy - r * r;
-    float disc = b * b - 4.0f * a * c;
-    if (disc < 0.0f) return -1.0f;
-    float sqd = sqrtf(disc);
-    float t1 = (-b - sqd) / (2.0f * a);
-    float t2 = (-b + sqd) / (2.0f * a);
+    double b = 2.0 * (fx * dx + fy * dy);
+    double c = fx * fx + fy * fy - (double)r * (double)r;
+    double disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) return -1.0f;
+    double sqd = sqrt(disc);
+    double t1 = (-b - sqd) / (2.0 * a);
+    double t2 = (-b + sqd) / (2.0 * a);
     /* Return the earliest entry point in [0,1] */
-    if (t1 >= 0.0f && t1 <= 1.0f) return t1;
-    if (t2 >= 0.0f && t2 <= 1.0f) return t2;
+    if (t1 >= 0.0 && t1 <= 1.0) return (float)t1;
+    if (t2 >= 0.0 && t2 <= 1.0) return (float)t2;
     /* Segment starts inside circle */
-    if (c <= 0.0f) return 0.0f;
+    if (c <= 0.0) return 0.0f;
     return -1.0f;
+}
+
+/*
+ * Swept-pair collision detection for two moving circles (or moving circle and moving segment).
+ * Returns 1 if they hit during t ∈ [0,1], 0 otherwise.
+ */
+static int ow_swept_pair_hit(float ax, float ay, float bx, float by,
+                             float px0, float py0, float px1, float py1,
+                             float r) {
+    double d0x = (double)ax - (double)px0;
+    double d0y = (double)ay - (double)py0;
+    double dvx = ((double)bx - (double)ax) - ((double)px1 - (double)px0);
+    double dvy = ((double)by - (double)ay) - ((double)py1 - (double)py0);
+    double a = dvx * dvx + dvy * dvy;
+    double b = 2.0 * (d0x * dvx + d0y * dvy);
+    double c = d0x * d0x + d0y * d0y - (double)r * (double)r;
+    if (a < 1e-15) {
+        return c <= 0.0;
+    }
+    double disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) return 0;
+    double sq = sqrt(disc);
+    double t1 = (-b - sq) / (2.0 * a);
+    double t2 = (-b + sq) / (2.0 * a);
+    return (t2 >= 0.0 && t1 <= 1.0);
 }
 
 /* ========================================================================
@@ -247,9 +272,9 @@ static float ow_segment_circle_t(float x1, float y1, float x2, float y2,
 
 static inline float ow_fleet_speed(int ships) {
     if (ships <= 1) return 1.0f;
-    float ratio = logf((float)ships) / logf(1000.0f);
-    if (ratio > 1.0f) ratio = 1.0f;
-    return 1.0f + (OW_MAX_SPEED - 1.0f) * powf(ratio, 1.5f);
+    double ratio = log((double)ships) / log(1000.0);
+    if (ratio > 1.0) ratio = 1.0;
+    return (float)(1.0 + ((double)OW_MAX_SPEED - 1.0) * pow(ratio, 1.5));
 }
 
 /* ========================================================================
@@ -257,7 +282,7 @@ static inline float ow_fleet_speed(int ships) {
  * ======================================================================== */
 
 static inline float ow_planet_radius(int production) {
-    return 1.0f + logf((float)production);
+    return (float)(1.0 + log((double)production));
 }
 
 /* ========================================================================
@@ -510,20 +535,17 @@ static void ow_spawn_comet_group(OrbitWars* env) {
     }
 
     /* Create 4 comet-planets at path start positions */
-    cg->path_index = 0;
+    cg->path_index = -1;
     cg->active = 1;
     for (int m = 0; m < 4; m++) {
         int idx = env->num_planets;
         if (idx >= OW_MAX_PLANETS) break;
 
-        float cx = cg->paths_x[m][0];
-        float cy = cg->paths_y[m][0];
-
         env->planets[idx] = (PlanetC){
-            .id = env->next_planet_id++,
+            .id = idx,
             .owner = -1,
-            .x = cx,
-            .y = cy,
+            .x = -99.0f,
+            .y = -99.0f,
             .radius = OW_COMET_RADIUS,
             .ships = ships,
             .production = OW_COMET_PRODUCTION,
@@ -688,6 +710,7 @@ static void ow_phase_comet_expiration(OrbitWars* env) {
                 }
             }
             cg->active = 0;
+            env->num_planets -= 4;
             continue;
         }
 
@@ -752,8 +775,8 @@ static void ow_phase_fleet_launch(OrbitWars* env) {
             if (fi < 0) continue;
 
             /* Spawn just outside planet radius */
-            float spawn_x = src->x + (src->radius + OW_FLEET_SPAWN_OFFSET) * cosf(act->angle);
-            float spawn_y = src->y + (src->radius + OW_FLEET_SPAWN_OFFSET) * sinf(act->angle);
+            double spawn_x = src->x + (src->radius + (double)OW_FLEET_SPAWN_OFFSET) * cos(act->angle);
+            double spawn_y = src->y + (src->radius + (double)OW_FLEET_SPAWN_OFFSET) * sin(act->angle);
 
             env->fleets[fi] = (FleetC){
                 .id = env->next_fleet_id++,
@@ -796,9 +819,61 @@ static void ow_phase_fleet_movement(OrbitWars* env) {
         FleetC* fl = &env->fleets[fi];
         if (!fl->active) continue;
 
-        float old_x = fl->x, old_y = fl->y;
-        float new_x = old_x + fl->speed * cosf(fl->angle);
-        float new_y = old_y + fl->speed * sinf(fl->angle);
+        double old_x = fl->x, old_y = fl->y;
+        double new_x = old_x + fl->speed * cos(fl->angle);
+        double new_y = old_y + fl->speed * sin(fl->angle);
+
+        /* Check planet collisions first using swept-pair continuous check */
+        int hit_planet = 0;
+        for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
+            PlanetC* pl = &env->planets[pi];
+            if (!pl->active) continue;
+
+            /* Check if first-placement comet (starts off-board, do not hit) */
+            if (pl->x < 0.0f) continue;
+
+
+
+            /* Compute projected next position for swept collision check */
+            double p_new_x = pl->x;
+            double p_new_y = pl->y;
+            if (env->planet_orbits[pi]) {
+                p_new_x = OW_SUN_X + env->planet_orbital_radius[pi] * cos(env->planet_angle[pi]);
+                p_new_y = OW_SUN_Y + env->planet_orbital_radius[pi] * sin(env->planet_angle[pi]);
+            } else if (pl->is_comet) {
+                // Find comet group path
+                for (int gi = 0; gi < env->num_comet_groups; gi++) {
+                    CometGroupC* cg = &env->comet_groups[gi];
+                    if (!cg->active) continue;
+                    int found = 0;
+                    for (int m = 0; m < 4; m++) {
+                        if (cg->planet_ids[m] == pl->id) {
+                            int next_idx = cg->path_index + 1;
+                            if (next_idx < cg->num_steps) {
+                                p_new_x = cg->paths_x[m][next_idx];
+                                p_new_y = cg->paths_y[m][next_idx];
+                            }
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+            }
+
+
+
+            if (ow_swept_pair_hit(old_x, old_y, new_x, new_y,
+                                  pl->x, pl->y, p_new_x, p_new_y,
+                                  pl->radius)) {
+                env->arriving_ships[pi][fl->owner] += fl->ships;
+                fl->active = 0;
+                hit_planet = 1;
+                break;
+            }
+        }
+
+        if (hit_planet) continue;
 
         /* Check OOB */
         if (new_x < 0.0f || new_x > OW_BOARD_SIZE ||
@@ -815,35 +890,9 @@ static void ow_phase_fleet_movement(OrbitWars* env) {
             continue;
         }
 
-        /* Check planet collisions — find earliest */
-        float best_t = 2.0f;
-        int best_planet = -1;
-        for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
-            PlanetC* pl = &env->planets[pi];
-            if (!pl->active) continue;
-            /* Don't collide with the launch planet on the first step.
-             * We check by distance: if the fleet starts inside/near the planet,
-             * skip this planet for collision (it just launched). */
-            float start_dist = ow_dist(old_x, old_y, pl->x, pl->y);
-            if (start_dist < pl->radius + 0.5f) continue;
-
-            float t = ow_segment_circle_t(old_x, old_y, new_x, new_y,
-                                           pl->x, pl->y, pl->radius);
-            if (t >= 0.0f && t < best_t) {
-                best_t = t;
-                best_planet = pi;
-            }
-        }
-
-        if (best_planet >= 0) {
-            /* Fleet hits a planet — queue for combat */
-            env->arriving_ships[best_planet][fl->owner] += fl->ships;
-            fl->active = 0;
-        } else {
-            /* Move fleet to new position */
-            fl->x = new_x;
-            fl->y = new_y;
-        }
+        /* Move fleet to new position */
+        fl->x = new_x;
+        fl->y = new_y;
     }
 }
 
@@ -854,14 +903,15 @@ static void ow_phase_fleet_movement(OrbitWars* env) {
  * ======================================================================== */
 
 static void ow_phase_rotation_and_comets(OrbitWars* env) {
-    /* Rotate orbiting planets */
+    /* Rotate orbiting planets — update position with current angle, then increment angle */
     for (int i = 0; i < OW_MAX_PLANETS; i++) {
         if (!env->planets[i].active || !env->planet_orbits[i]) continue;
         if (env->planets[i].is_comet) continue; /* comets move via paths */
 
-        env->planet_angle[i] += env->angular_velocity;
-        env->planets[i].x = OW_SUN_X + env->planet_orbital_radius[i] * cosf(env->planet_angle[i]);
-        env->planets[i].y = OW_SUN_Y + env->planet_orbital_radius[i] * sinf(env->planet_angle[i]);
+        double next_angle = env->planet_angle[i] + env->angular_velocity;
+        env->planets[i].x = OW_SUN_X + env->planet_orbital_radius[i] * cos(env->planet_angle[i]);
+        env->planets[i].y = OW_SUN_Y + env->planet_orbital_radius[i] * sin(env->planet_angle[i]);
+        env->planet_angle[i] = next_angle;
     }
 
     /* Move comets along their paths */
@@ -879,24 +929,6 @@ static void ow_phase_rotation_and_comets(OrbitWars* env) {
                 if (env->planets[pi].id != cg->planet_ids[m]) continue;
                 env->planets[pi].x = cg->paths_x[m][cg->path_index];
                 env->planets[pi].y = cg->paths_y[m][cg->path_index];
-                break;
-            }
-        }
-    }
-
-    /* Check if any fleet is now inside a planet (swept by rotation/comet) */
-    for (int fi = 0; fi < OW_MAX_FLEETS; fi++) {
-        FleetC* fl = &env->fleets[fi];
-        if (!fl->active) continue;
-
-        for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
-            PlanetC* pl = &env->planets[pi];
-            if (!pl->active) continue;
-            float d = ow_dist(fl->x, fl->y, pl->x, pl->y);
-            if (d < pl->radius) {
-                /* Fleet is inside planet after rotation — queue combat */
-                env->arriving_ships[pi][fl->owner] += fl->ships;
-                fl->active = 0;
                 break;
             }
         }
@@ -1081,12 +1113,12 @@ void c_step_core(OrbitWars* env) {
     env->current_step++;
 
     /* Execute turn phases in order */
-    ow_phase_comet_expiration(env);
     ow_phase_comet_spawning(env);
     ow_phase_fleet_launch(env);
     ow_phase_production(env);
     ow_phase_fleet_movement(env);
     ow_phase_rotation_and_comets(env);
+    ow_phase_comet_expiration(env);
     ow_phase_combat_resolution(env);
 
     /* Check game over */

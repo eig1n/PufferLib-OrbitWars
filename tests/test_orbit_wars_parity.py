@@ -89,6 +89,10 @@ class Log(ctypes.Structure):
         ("score", ctypes.c_float),
         ("episode_return", ctypes.c_float),
         ("episode_length", ctypes.c_float),
+        ("hist_score", ctypes.c_float),
+        ("hist_n", ctypes.c_float),
+        ("hist_score_bank", ctypes.c_float * 8),
+        ("hist_n_bank", ctypes.c_float * 8),
         ("n", ctypes.c_float),
     ]
 

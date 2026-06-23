@@ -58,4 +58,22 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return);
     dict_set(out, "episode_length", log->episode_length);
+    dict_set(out, "hist_score", log->hist_score);
+    dict_set(out, "hist_n", log->hist_n);
+    dict_set(out, "hist_score_bank_0", log->hist_score_bank[0]);
+    dict_set(out, "hist_score_bank_1", log->hist_score_bank[1]);
+    dict_set(out, "hist_score_bank_2", log->hist_score_bank[2]);
+    dict_set(out, "hist_score_bank_3", log->hist_score_bank[3]);
+    dict_set(out, "hist_score_bank_4", log->hist_score_bank[4]);
+    dict_set(out, "hist_score_bank_5", log->hist_score_bank[5]);
+    dict_set(out, "hist_score_bank_6", log->hist_score_bank[6]);
+    dict_set(out, "hist_score_bank_7", log->hist_score_bank[7]);
+    dict_set(out, "hist_n_bank_0", log->hist_n_bank[0]);
+    dict_set(out, "hist_n_bank_1", log->hist_n_bank[1]);
+    dict_set(out, "hist_n_bank_2", log->hist_n_bank[2]);
+    dict_set(out, "hist_n_bank_3", log->hist_n_bank[3]);
+    dict_set(out, "hist_n_bank_4", log->hist_n_bank[4]);
+    dict_set(out, "hist_n_bank_5", log->hist_n_bank[5]);
+    dict_set(out, "hist_n_bank_6", log->hist_n_bank[6]);
+    dict_set(out, "hist_n_bank_7", log->hist_n_bank[7]);
 }

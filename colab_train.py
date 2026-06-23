@@ -34,7 +34,6 @@ process = subprocess.Popen(
     [sys.executable, "-m", "pufferlib.pufferl", "train", "orbit_wars", "--slowly"],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
-    text=True,
     bufsize=1
 )
 
@@ -55,9 +54,10 @@ while time.time() - start_time < 10.0:
     try:
         data = process.stdout.read()
         if data:
-            sys.stdout.write(data)
+            text = data.decode('utf-8', errors='ignore')
+            sys.stdout.write(text)
             sys.stdout.flush()
-            log_file.write(data)
+            log_file.write(text)
             log_file.flush()
     except IOError:
         pass
@@ -77,9 +77,10 @@ try:
     os.set_blocking(process.stdout.fileno(), True)
     data = process.stdout.read()
     if data:
-        sys.stdout.write(data)
+        text = data.decode('utf-8', errors='ignore')
+        sys.stdout.write(text)
         sys.stdout.flush()
-        log_file.write(data)
+        log_file.write(text)
         log_file.flush()
 except Exception:
     pass

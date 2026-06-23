@@ -79,7 +79,7 @@ While internal physics use high-precision doubles, observations are cast to sing
 obs[idx++] = pl->x / OW_BOARD_SIZE;                  // [0.0, 1.0] board positions
 obs[idx++] = pl->y / OW_BOARD_SIZE;
 obs[idx++] = pl->radius / 5.0f;                     // [0.2, 1.0] radius scaling
-obs[idx++] = (float)pl->ships / 100.0f;             // Normalizes ship densities
+obs[idx++] = (float)pl->ships / 1000.0f;             // Normalizes ship densities
 obs[idx++] = (float)pl->production / 5.0f;          // Normalizes production rate
 obs[idx++] = fl->angle / (2.0f * M_PI);             // [0.0, 1.0] angle buckets
 obs[idx++] = env->angular_velocity / 0.05f;          // [0.5, 1.0] velocity ratio
@@ -138,16 +138,33 @@ bash build.sh orbit_wars --cpu
 ```
 
 ### Run the Parity Test Suite
-Compares single-step transitions and independent multi-step rollouts:
+Compares C simulator step-by-step and independent multi-step rollouts against original Python:
 ```bash
 .venv/bin/python tests/test_orbit_wars_parity.py
 ```
 
 ### Run the PufferLib Environment Test Suite
-Performs build checks, vector creation, smoke stepping, obs validation, episode termination checks, and benchmarks:
+Performs smoke tests, vector resets, observation validation, episode terminal checks, and benchmarks:
 ```bash
 .venv/bin/python tests/test_orbit_wars.py
 ```
+
+### Run Google Colab Verification
+To run tests on a Google Colab instance from your local machine, use the `colab` CLI tool. The environment setup and test runners are decoupled to run within the default 30-second cell execution limits:
+
+1. **One-time Setup**:
+   ```bash
+   colab new
+   colab exec -f colab_setup.py
+   ```
+2. **Build and Environment Tests**:
+   ```bash
+   colab exec -f colab_build.py 2>&1 | tee colab_build_run.log
+   ```
+3. **C vs Python Parity Tests**:
+   ```bash
+   colab exec -f colab_parity.py 2>&1 | tee colab_parity_run.log
+   ```
 
 ### Train the Agent (CPU)
 PufferLib reads default configurations directly from the [config/orbit_wars.ini](file:///home/dima/dev/PufferLib-4.0/config/orbit_wars.ini) file. 

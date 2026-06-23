@@ -137,6 +137,7 @@ class OrbitWarsStruct(ctypes.Structure):
 
         ("arriving_ships", (ctypes.c_int * OW_MAX_PLAYERS) * OW_MAX_PLANETS),
         ("prevent_reset", ctypes.c_int),
+        ("raw_observations", (ctypes.c_float * OW_OBS_SIZE) * OW_MAX_PLAYERS),
     ]
 
 # ------------------------------------------------------------------ #
@@ -151,6 +152,7 @@ def compile_and_load():
     subprocess.run(
         [
             "cc", "-std=c99", "-shared", "-fPIC", "-O2",
+            "-DPARITY_TESTING",
             "-I", str(PUFFERLIB_ROOT),
             "-I", str(PUFFERLIB_ROOT / "raylib-5.5_linux_amd64/include"),
             "-o", str(so_path),
@@ -390,19 +392,19 @@ def compute_reference_observation(c_env, player_id, num_agents):
             # owner_relative
             owner = cp.owner
             if owner == -1:
-                rel = -1.0 / num_agents
+                rel = -1.0
             elif owner == player_id:
                 rel = 0.0
             else:
                 rel_val = (owner - player_id + num_agents) % num_agents
-                rel = float(rel_val) / float(num_agents - 1)
+                rel = float(rel_val)
                 
             features[idx + 0] = rel
-            features[idx + 1] = cp.x / OW_BOARD_SIZE
-            features[idx + 2] = cp.y / OW_BOARD_SIZE
-            features[idx + 3] = cp.radius / 5.0
-            features[idx + 4] = float(cp.ships) / 1000.0
-            features[idx + 5] = float(cp.production) / 5.0
+            features[idx + 1] = cp.x
+            features[idx + 2] = cp.y
+            features[idx + 3] = cp.radius
+            features[idx + 4] = float(cp.ships)
+            features[idx + 5] = float(cp.production)
             features[idx + 6] = 1.0
         idx += 7
         
@@ -416,19 +418,19 @@ def compute_reference_observation(c_env, player_id, num_agents):
                 rel = 0.0
             else:
                 rel_val = (owner - player_id + num_agents) % num_agents
-                rel = float(rel_val) / float(num_agents - 1)
+                rel = float(rel_val)
                 
             features[idx + 0] = rel
-            features[idx + 1] = cf.x / OW_BOARD_SIZE
-            features[idx + 2] = cf.y / OW_BOARD_SIZE
-            features[idx + 3] = cf.angle / (2.0 * math.pi)
-            features[idx + 4] = float(cf.ships) / 1000.0
+            features[idx + 1] = cf.x
+            features[idx + 2] = cf.y
+            features[idx + 3] = cf.angle
+            features[idx + 4] = float(cf.ships)
             features[idx + 5] = 1.0
         idx += 6
         
     # Global features (4)
-    features[idx + 0] = c_env.angular_velocity / 0.05
-    features[idx + 1] = float(c_env.current_step) / float(OW_MAX_STEPS)
+    features[idx + 0] = c_env.angular_velocity
+    features[idx + 1] = float(c_env.current_step)
     
     my_ships = 0
     enemy_ships = 0
@@ -452,8 +454,8 @@ def compute_reference_observation(c_env, player_id, num_agents):
             else:
                 enemy_ships += ships
             
-    features[idx + 2] = float(my_ships) / 1000.0
-    features[idx + 3] = float(enemy_ships) / 1000.0
+    features[idx + 2] = float(my_ships)
+    features[idx + 3] = float(enemy_ships)
     
     return features
 
@@ -599,9 +601,7 @@ def test_parity_single_step(lib, seed, num_agents):
         # 6. Check observation parity
         for p in range(num_agents):
             ref_obs = compute_reference_observation(c_env, p, num_agents)
-            c_obs_arr = np.ctypeslib.as_array(
-                (ctypes.c_float * OW_OBS_SIZE).from_address(c_env.obs_ptr[p])
-            )
+            c_obs_arr = np.ctypeslib.as_array(c_env.raw_observations[p])
             
             if not np.allclose(ref_obs, c_obs_arr, atol=1e-4):
                 print(f"Observation mismatch at step {step} for agent {p}!")
@@ -685,9 +685,7 @@ def test_parity_rollout(lib, seed, num_agents):
         # 5. Check observation parity
         for p in range(num_agents):
             ref_obs = compute_reference_observation(c_env, p, num_agents)
-            c_obs_arr = np.ctypeslib.as_array(
-                (ctypes.c_float * OW_OBS_SIZE).from_address(c_env.obs_ptr[p])
-            )
+            c_obs_arr = np.ctypeslib.as_array(c_env.raw_observations[p])
             assert np.allclose(ref_obs, c_obs_arr, atol=1e-4), (
                 f"Observation mismatch at step {step} for agent {p} during rollout!"
             )
@@ -888,6 +886,11 @@ def run_parity_step_for_scenario(lib, planets, fleets, num_agents=2, step=1, ang
         c_env.action_ptr[i] = ctypes.addressof(action_buf) + i * 3 * 4
         c_env.reward_ptr[i] = ctypes.addressof(reward_buf) + i * 4
         c_env.terminal_ptr[i] = ctypes.addressof(terminal_buf) + i * 4
+
+    c_env._obs_buf = obs_buf
+    c_env._action_buf = action_buf
+    c_env._reward_buf = reward_buf
+    c_env._terminal_buf = terminal_buf
 
     # 3. Copy initial state to C
     copy_state_py_to_c_with_speed(state[0].observation, c_env, num_agents, ship_speed=config["shipSpeed"])

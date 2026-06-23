@@ -59,8 +59,8 @@ To enable direct memory injection and observation assertions in the parity test 
   - active (int): Activity flag.
 
 ### Core Environment Layout (OrbitWars)
-- C representation: OrbitWars (95,368 bytes)
-- Python representation: class OrbitWarsStruct(ctypes.Structure)
+- C representation: OrbitWars (95,368 bytes standard, 199,112 bytes under `PARITY_TESTING`)
+- Python representation: class OrbitWarsStruct(ctypes.Structure) (always 199,112 bytes for parity testing)
 - Fields:
   - log (Log): PufferLib metric logs.
   - client, observations, actions, rewards, terminals (void_p): Routing pointers.
@@ -77,6 +77,7 @@ To enable direct memory injection and observation assertions in the parity test 
   - planet_angle (double * 48), planet_orbital_radius (double * 48), planet_orbits (int * 48): Orbital specs.
   - arriving_ships (int[48][4]): Queue for combat grouping.
   - prevent_reset: Debug marker.
+  - raw_observations (float[4][6484]): Conditionally included when `PARITY_TESTING` is defined, used to hold unscaled observations for verification.
 
 > [!IMPORTANT]
 > To prevent floating-point divergence, all coordinates, orbits, speeds, and headings are stored and calculated in double precision (double / c_double). Observations are cast to float only at output mapping.
@@ -131,27 +132,62 @@ graph TD
 
 ## 5. Observation and Reward Layouts
 
-### Observation Array (6484 Floats per Agent)
-Observations are generated symmetrically relative to the observing player index a.
+### Decoupled Observation Architecture
+Observation computation is split into two distinct, decoupled steps to facilitate experimental scaling/feature changes without breaking parity verifications:
+1. **Raw Feature Extraction (`ow_compute_raw_observations`)**: Extracts the raw, unscaled perspective-relative values (e.g. absolute coordinates, integer ship counts). If `PARITY_TESTING` is defined, these raw values are copied to the `raw_observations` buffer for 1-to-1 parity verification against the reference Python test suite.
+2. **Feature Engineering & Scaling (`ow_process_observations`)**: Reads the raw values and scales them in-place (e.g. dividing by constants) before writing them to the final neural network observations exposed through `obs_ptr`.
 
-1. Planet Features (48 * 7 = 336 floats):
-   - idx + 0: Relative ownership. 0 for player a, 1..3 for opponent indices (wrapped symmetrically), -1 for neutral.
-   - idx + 1, idx + 2: Planet positions x, y normalized to [0.0, 1.0] via division by OW_BOARD_SIZE (100.0).
-   - idx + 3: Planet radius normalized via division by 5.0.
-   - idx + 4: Planet garrison normalized via division by 1000.0.
-   - idx + 5: Planet production rate normalized via division by 5.0.
-   - idx + 6: Active flag (1.0 if active, 0.0 if empty slot).
-2. Fleet Features (1024 * 6 = 6144 floats):
-   - idx + 0: Relative ownership (Ego = 0.0, relative opponent = normalized opponent index).
-   - idx + 1, idx + 2: Position x, y divided by OW_BOARD_SIZE.
-   - idx + 3: Travel heading divided by 2*pi.
-   - idx + 4: Fleet ship count divided by 1000.0.
-   - idx + 5: Active flag (1.0 if active, 0.0 if empty slot).
-3. Global Features (4 floats):
-   - idx + 0: Sun angular velocity normalized via division by 0.05.
-   - idx + 1: Current game step index divided by OW_MAX_STEPS (500.0).
-   - idx + 2: Observer's total ship count (planets + fleets) divided by 1000.0.
-   - idx + 3: Combined enemies' total ship count divided by 1000.0.
+### Observation Array Features (6484 Floats per Agent)
+Observations are generated symmetrically relative to the observing player index a. Below is the mapping of raw and processed (scaled) features:
+
+#### 1. Planet Features (48 * 7 = 336 floats)
+- **idx + 0 (Relative ownership)**:
+  - *Raw*: Relative player offset (`0.0f` to `3.0f`), or `-1.0f` for neutral.
+  - *Scaled*: Divided by `num_agents - 1` (or `-1.0f / num_agents` if neutral).
+- **idx + 1, idx + 2 (Position x, y)**:
+  - *Raw*: Coordinates in range `[0.0, 100.0]`.
+  - *Scaled*: Divided by `OW_BOARD_SIZE` (100.0).
+- **idx + 3 (Radius)**:
+  - *Raw*: Planet radius.
+  - *Scaled*: Divided by `5.0`.
+- **idx + 4 (Garrison)**:
+  - *Raw*: Planet ship count.
+  - *Scaled*: Divided by `1000.0`.
+- **idx + 5 (Production rate)**:
+  - *Raw*: Planet production.
+  - *Scaled*: Divided by `5.0`.
+- **idx + 6 (Active flag)**:
+  - `1.0` if active planet slot, `0.0` otherwise.
+
+#### 2. Fleet Features (1024 * 6 = 6144 floats)
+- **idx + 0 (Relative ownership)**:
+  - *Raw*: Relative player offset (`0.0f` to `3.0f`).
+  - *Scaled*: Divided by `num_agents - 1`.
+- **idx + 1, idx + 2 (Position x, y)**:
+  - *Raw*: Fleet coordinates.
+  - *Scaled*: Divided by `OW_BOARD_SIZE` (100.0).
+- **idx + 3 (Heading angle)**:
+  - *Raw*: Travel heading angle in radians (`[0.0, 2*pi]`).
+  - *Scaled*: Divided by `2 * pi`.
+- **idx + 4 (Garrison)**:
+  - *Raw*: Fleet ship count.
+  - *Scaled*: Divided by `1000.0`.
+- **idx + 5 (Active flag)**:
+  - `1.0` if active fleet slot, `0.0` otherwise.
+
+#### 3. Global Features (4 floats)
+- **idx + 0 (Sun angular velocity)**:
+  - *Raw*: Angular velocity.
+  - *Scaled*: Divided by `0.05`.
+- **idx + 1 (Current step)**:
+  - *Raw*: Step index.
+  - *Scaled*: Divided by `OW_MAX_STEPS` (500.0).
+- **idx + 2 (Observer total ships)**:
+  - *Raw*: Combined garrison + fleet ships for observer.
+  - *Scaled*: Divided by `1000.0`.
+- **idx + 3 (Enemies total ships)**:
+  - *Raw*: Combined garrison + fleet ships for all enemy players.
+  - *Scaled*: Divided by `1000.0`.
 
 ### Reward Mappings
 Rewards are terminal outcomes calculated at the end of the episode:

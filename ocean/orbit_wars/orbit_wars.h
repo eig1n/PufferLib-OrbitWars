@@ -180,6 +180,9 @@ typedef struct {
     int arriving_ships[OW_MAX_PLANETS][OW_MAX_PLAYERS];
 
     int prevent_reset;
+#ifdef PARITY_TESTING
+    float raw_observations[OW_MAX_PLAYERS][OW_OBS_SIZE];
+#endif
 } OrbitWars;
 
 /* ========================================================================
@@ -569,85 +572,159 @@ static void ow_spawn_comet_group(OrbitWars* env) {
  * Observation computation — perspective-symmetric
  * ======================================================================== */
 
+static void ow_compute_raw_observations(OrbitWars* env, int a, float* obs) {
+    int na = env->num_agents;
+    /* Get the actual player ID for slot a */
+    int player_id = -1;
+    for (int p = 0; p < na; p++) {
+        if (env->slot_for_color[p] == a) { player_id = p; break; }
+    }
+    if (player_id < 0) player_id = a; /* fallback */
+
+    int idx = 0;
+
+    /* Per-planet features (48 × 7) */
+    for (int p = 0; p < OW_MAX_PLANETS; p++) {
+        PlanetC* pl = &env->planets[p];
+        if (pl->active) {
+            /* Owner relative to observer */
+            if (pl->owner == -1) {
+                obs[idx++] = -1.0f;
+            } else if (pl->owner == player_id) {
+                obs[idx++] = 0.0f;
+            } else {
+                int rel = (pl->owner - player_id + na) % na;
+                obs[idx++] = (float)rel;
+            }
+            obs[idx++] = (float)pl->x;
+            obs[idx++] = (float)pl->y;
+            obs[idx++] = (float)pl->radius;
+            obs[idx++] = (float)pl->ships;
+            obs[idx++] = (float)pl->production;
+            obs[idx++] = 1.0f;
+        } else {
+            for (int f = 0; f < OW_PLANET_OBS_FEAT; f++) obs[idx++] = 0.0f;
+        }
+    }
+
+    /* Per-fleet features (1024 × 6) */
+    for (int f = 0; f < OW_MAX_FLEETS; f++) {
+        FleetC* fl = &env->fleets[f];
+        if (fl->active) {
+            if (fl->owner == player_id) {
+                obs[idx++] = 0.0f;
+            } else {
+                int rel = (fl->owner - player_id + na) % na;
+                obs[idx++] = (float)rel;
+            }
+            obs[idx++] = (float)fl->x;
+            obs[idx++] = (float)fl->y;
+            obs[idx++] = (float)fl->angle;
+            obs[idx++] = (float)fl->ships;
+            obs[idx++] = 1.0f;
+        } else {
+            for (int ff = 0; ff < OW_FLEET_OBS_FEAT; ff++) obs[idx++] = 0.0f;
+        }
+    }
+
+    /* Global features (4) */
+    obs[idx++] = (float)env->angular_velocity;
+    obs[idx++] = (float)env->current_step;
+
+    int my_ships = 0, enemy_ships = 0;
+    for (int p = 0; p < OW_MAX_PLANETS; p++) {
+        if (!env->planets[p].active) continue;
+        if (env->planets[p].owner == player_id)
+            my_ships += env->planets[p].ships;
+        else if (env->planets[p].owner != -1)
+            enemy_ships += env->planets[p].ships;
+    }
+    for (int f = 0; f < OW_MAX_FLEETS; f++) {
+        if (!env->fleets[f].active) continue;
+        if (env->fleets[f].owner == player_id)
+            my_ships += env->fleets[f].ships;
+        else
+            enemy_ships += env->fleets[f].ships;
+    }
+    obs[idx++] = (float)my_ships;
+    obs[idx++] = (float)enemy_ships;
+}
+
+static void ow_process_observations(OrbitWars* env, int a, const float* raw_obs, float* out_obs) {
+    int na = env->num_agents;
+    int idx = 0;
+
+    /* Process per-planet features (48 × 7) */
+    for (int p = 0; p < OW_MAX_PLANETS; p++) {
+        PlanetC* pl = &env->planets[p];
+        if (pl->active) {
+            /* owner relative */
+            if (raw_obs[idx] == -1.0f) {
+                out_obs[idx] = -1.0f / (float)na;
+            } else if (raw_obs[idx] == 0.0f) {
+                out_obs[idx] = 0.0f;
+            } else {
+                out_obs[idx] = raw_obs[idx] / (float)(na - 1);
+            }
+            idx++;
+
+            out_obs[idx] = raw_obs[idx] / OW_BOARD_SIZE; idx++; /* x */
+            out_obs[idx] = raw_obs[idx] / OW_BOARD_SIZE; idx++; /* y */
+            out_obs[idx] = raw_obs[idx] / 5.0f;          idx++; /* radius */
+            out_obs[idx] = raw_obs[idx] / 1000.0f;       idx++; /* ships */
+            out_obs[idx] = raw_obs[idx] / 5.0f;          idx++; /* production */
+            out_obs[idx] = 1.0f;                         idx++; /* active */
+        } else {
+            for (int f = 0; f < OW_PLANET_OBS_FEAT; f++) {
+                out_obs[idx] = 0.0f;
+                idx++;
+            }
+        }
+    }
+
+    /* Process per-fleet features (1024 × 6) */
+    for (int f = 0; f < OW_MAX_FLEETS; f++) {
+        FleetC* fl = &env->fleets[f];
+        if (fl->active) {
+            /* owner relative */
+            if (raw_obs[idx] == 0.0f) {
+                out_obs[idx] = 0.0f;
+            } else {
+                out_obs[idx] = raw_obs[idx] / (float)(na - 1);
+            }
+            idx++;
+
+            out_obs[idx] = raw_obs[idx] / OW_BOARD_SIZE; idx++; /* x */
+            out_obs[idx] = raw_obs[idx] / OW_BOARD_SIZE; idx++; /* y */
+            out_obs[idx] = raw_obs[idx] / (2.0f * M_PI); idx++; /* angle */
+            out_obs[idx] = raw_obs[idx] / 1000.0f;       idx++; /* ships */
+            out_obs[idx] = 1.0f;                         idx++; /* active */
+        } else {
+            for (int ff = 0; ff < OW_FLEET_OBS_FEAT; ff++) {
+                out_obs[idx] = 0.0f;
+                idx++;
+            }
+        }
+    }
+
+    /* Process global features (4) */
+    out_obs[idx] = raw_obs[idx] / 0.05f;                 idx++; /* angular_velocity */
+    out_obs[idx] = raw_obs[idx] / (float)OW_MAX_STEPS;   idx++; /* current_step */
+    out_obs[idx] = raw_obs[idx] / 1000.0f;               idx++; /* my_ships */
+    out_obs[idx] = raw_obs[idx] / 1000.0f;               idx++; /* enemy_ships */
+}
+
 static void ow_compute_observations(OrbitWars* env) {
     int na = env->num_agents;
-
     for (int a = 0; a < na; a++) {
-        /* Get the actual player ID for slot a */
-        int player_id = -1;
-        for (int p = 0; p < na; p++) {
-            if (env->slot_for_color[p] == a) { player_id = p; break; }
-        }
-        if (player_id < 0) player_id = a; /* fallback */
+        float raw_obs[OW_OBS_SIZE];
+        ow_compute_raw_observations(env, a, raw_obs);
 
-        float* obs = env->obs_ptr[a];
-        int idx = 0;
+#ifdef PARITY_TESTING
+        memcpy(env->raw_observations[a], raw_obs, sizeof(float) * OW_OBS_SIZE);
+#endif
 
-        /* Per-planet features (48 × 7) */
-        for (int p = 0; p < OW_MAX_PLANETS; p++) {
-            PlanetC* pl = &env->planets[p];
-            if (pl->active) {
-                /* Owner relative to observer */
-                if (pl->owner == -1) {
-                    obs[idx++] = -1.0f / (float)na;
-                } else if (pl->owner == player_id) {
-                    obs[idx++] = 0.0f;
-                } else {
-                    int rel = (pl->owner - player_id + na) % na;
-                    obs[idx++] = (float)rel / (float)(na - 1);
-                }
-                obs[idx++] = pl->x / OW_BOARD_SIZE;
-                obs[idx++] = pl->y / OW_BOARD_SIZE;
-                obs[idx++] = pl->radius / 5.0f;
-                obs[idx++] = (float)pl->ships / 1000.0f;
-                obs[idx++] = (float)pl->production / 5.0f;
-                obs[idx++] = 1.0f;
-            } else {
-                for (int f = 0; f < OW_PLANET_OBS_FEAT; f++) obs[idx++] = 0.0f;
-            }
-        }
-
-        /* Per-fleet features (128 × 6) */
-        for (int f = 0; f < OW_MAX_FLEETS; f++) {
-            FleetC* fl = &env->fleets[f];
-            if (fl->active) {
-                if (fl->owner == player_id) {
-                    obs[idx++] = 0.0f;
-                } else {
-                    int rel = (fl->owner - player_id + na) % na;
-                    obs[idx++] = (float)rel / (float)(na - 1);
-                }
-                obs[idx++] = fl->x / OW_BOARD_SIZE;
-                obs[idx++] = fl->y / OW_BOARD_SIZE;
-                obs[idx++] = fl->angle / (2.0f * M_PI);
-                obs[idx++] = (float)fl->ships / 1000.0f;
-                obs[idx++] = 1.0f;
-            } else {
-                for (int ff = 0; ff < OW_FLEET_OBS_FEAT; ff++) obs[idx++] = 0.0f;
-            }
-        }
-
-        /* Global features (4) */
-        obs[idx++] = env->angular_velocity / 0.05f;
-        obs[idx++] = (float)env->current_step / (float)OW_MAX_STEPS;
-
-        int my_ships = 0, enemy_ships = 0;
-        for (int p = 0; p < OW_MAX_PLANETS; p++) {
-            if (!env->planets[p].active) continue;
-            if (env->planets[p].owner == player_id)
-                my_ships += env->planets[p].ships;
-            else if (env->planets[p].owner != -1)
-                enemy_ships += env->planets[p].ships;
-        }
-        for (int f = 0; f < OW_MAX_FLEETS; f++) {
-            if (!env->fleets[f].active) continue;
-            if (env->fleets[f].owner == player_id)
-                my_ships += env->fleets[f].ships;
-            else
-                enemy_ships += env->fleets[f].ships;
-        }
-        obs[idx++] = (float)my_ships / 1000.0f;
-        obs[idx++] = (float)enemy_ships / 1000.0f;
+        ow_process_observations(env, a, raw_obs, env->obs_ptr[a]);
     }
 }
 

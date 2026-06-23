@@ -3,6 +3,41 @@
 This document serves as the complete entry point and context map for any AI coding agent starting a new task or resuming development on the Orbit Wars environment.
 
 ---
+## 0. Dev env related stuff
+
+- using uv everywhere
+- using ssh for remote git stuff, but you don't have to worry about that you can just git push origin main, or I will do it manually
+
+### Build & Run Command Cheat Sheet
+
+#### 1. Build PufferLib C Environment (Local Machine)
+```bash
+# Compile CPU backend
+bash build.sh orbit_wars --cpu
+```
+
+#### 2. Run Test Suites (Local Machine)
+```bash
+# Run PufferLib Vectorization and Benchmark Suite
+.venv/bin/python tests/test_orbit_wars.py
+
+# Run C vs Python Parity Suite
+.venv/bin/python tests/test_orbit_wars_parity.py
+```
+
+#### 3. Run Google Colab Verification (From Local Machine) (Not necessary to do that unless want to test for speed or higher workloads for tests)
+The Colab setup and test scripts are decoupled to prevent cell execution timeouts. Run them in order:
+```bash
+# 1. Start a new Colab session and install dependencies
+colab new
+colab exec -f colab_setup.py
+
+# 2. Compile latest changes and run Vector/Benchmark checks (saves to colab_build_run.log)
+colab exec -f colab_build.py 2>&1 | tee colab_build_run.log
+
+# 3. Run full physical and observation parity verification (saves to colab_parity_run.log)
+colab exec -f colab_parity.py 2>&1 | tee colab_parity_run.log
+```
 
 ## 1. Codebase Directory Map
 

@@ -6,6 +6,7 @@ Implement the initial 1v1 fast training interface for Orbit Wars:
 - Use compact planet-centric production observations for training.
 - Use all-continuous interval actions: one `(x, r)` pair per canonical planet slot.
 - Start with 1v1 training; 4-player parity support remains in tests.
+- Repository base has been synced to upstream `PufferAI/PufferLib` commit `9a4eb87`, with Orbit Wars files overlaid in this same working directory.
 
 ## Important Files
 - `ocean/orbit_wars/orbit_wars.h`: Core C simulator, game state, turn phases, observation builders, interval action decoder, raw-action physics path.
@@ -42,10 +43,11 @@ Implement the initial 1v1 fast training interface for Orbit Wars:
   - `tests/test_orbit_wars_decoder.py`
   - `tests/orbit_wars_test_lib.c`
 - Colab:
-  - `colab_setup.py`
-  - `colab_build.py`
-  - `colab_parity.py`
-  - `colab_train.py`
+  - `scripts/orbit_wars_colab_setup.py`
+  - `scripts/orbit_wars_colab_build.py`
+  - `scripts/orbit_wars_colab_parity.py`
+  - `scripts/orbit_wars_colab_train.py`
+  - `scripts/orbit_wars_colab_test.py`
 
 ## Decisions Made
 - Planet slots are canonicalized by ascending planet id and padded to 48.
@@ -70,6 +72,8 @@ Implement the initial 1v1 fast training interface for Orbit Wars:
 - Updated runtime tests for continuous actions.
 - Added `scripts/orbit_wars_local_checks.sh` and saved latest local test logs.
 - Added first-pass Python policy deployment adapter.
+- Moved Orbit Wars Colab scripts from repo root to `scripts/orbit_wars_colab_*.py`.
+- Rebased the working tree contents onto upstream PufferLib source while preserving Orbit Wars-specific files.
 
 ## Python Policy Adapter
 - Location: `orbit-wars/puffer_agent/policy_adapter.py`.
@@ -85,6 +89,7 @@ Implement the initial 1v1 fast training interface for Orbit Wars:
 - `.venv/bin/python tests/test_orbit_wars.py`
 - `.venv/bin/python tests/test_orbit_wars_parity.py`
 - `bash scripts/orbit_wars_local_checks.sh` was syntax-checked only; the individual commands above were run and logged.
+- After syncing upstream PufferLib, build, decoder checks, runtime suite, and parity suite were run again and passed.
 
 Latest saved logs:
 - `logs/orbit_wars_build_cpu.log`
@@ -115,7 +120,7 @@ Latest saved logs:
    - It still needs the same validated projection and aiming semantics as C before checkpoint evaluation.
 4. Run Colab CPU checks:
    - Use `uv`/`.venv`.
-   - Run `colab_build.py`, `colab_parity.py`, `colab_train.py`.
+   - Run `scripts/orbit_wars_colab_build.py`, `scripts/orbit_wars_colab_parity.py`, `scripts/orbit_wars_colab_train.py`.
    - Use `selfplay.enabled=0`, small `total_agents`, and forced checkpoint save.
 5. Run short Colab GPU 1v1 train.
 6. Download latest `checkpoints/orbit_wars/**/*.bin`.
@@ -124,7 +129,6 @@ Latest saved logs:
 
 ## Do Not Reread Unless Needed
 - `vendor/**`: external/generated dependency code.
-- `puffer/**`: Puffertank utility files; unrelated to Orbit Wars interface work.
 - `orbit-wars/orbit_wars.py`: reference implementation; only reread when debugging C/Python parity or Kaggle semantics.
 - `ORBIT_WARS_GAME_RULES.md`: game rules reference; reread only for rule questions.
 - Long older root docs (`ORBIT_WARS_CONTEXT.md`, `ORBIT_WARS_TECHNICAL_SPECIFICATION.md`) are superseded for handoff purposes by this file.
@@ -139,4 +143,9 @@ Implementation files from this task:
 - `orbit-wars/puffer_agent/policy_adapter.py`
 - `orbit-wars/puffer_agent/__init__.py`
 - `scripts/orbit_wars_local_checks.sh`
+- `scripts/orbit_wars_colab_setup.py`
+- `scripts/orbit_wars_colab_build.py`
+- `scripts/orbit_wars_colab_parity.py`
+- `scripts/orbit_wars_colab_train.py`
+- `scripts/orbit_wars_colab_test.py`
 - `ORBIT_WARS_HANDOFF.md`

@@ -266,11 +266,11 @@ The Colab setup and test scripts are decoupled to prevent cell execution timeout
 ```bash
 # 1. Start a new Colab session and install dependencies
 colab new
-colab exec -f colab_setup.py
+colab exec -f scripts/orbit_wars_colab_setup.py
 
 # 2. Compile latest changes and run Vector/Benchmark checks (saves to colab_build_run.log)
-colab exec -f colab_build.py 2>&1 | tee colab_build_run.log
+colab exec -f scripts/orbit_wars_colab_build.py 2>&1 | tee colab_build_run.log
 
 # 3. Run full physical and observation parity verification (saves to colab_parity_run.log)
-colab exec -f colab_parity.py 2>&1 | tee colab_parity_run.log
+colab exec -f scripts/orbit_wars_colab_parity.py 2>&1 | tee colab_parity_run.log
 ```

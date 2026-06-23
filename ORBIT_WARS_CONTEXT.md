@@ -30,16 +30,16 @@ The Colab setup and test scripts are decoupled to prevent cell execution timeout
 ```bash
 # 1. Start a new Colab session and install dependencies
 colab new
-colab exec -f colab_setup.py
+colab exec -f scripts/orbit_wars_colab_setup.py
 
 # 2. Compile latest changes and run Vector/Benchmark checks (saves to colab_build_run.log)
-colab exec -f colab_build.py 2>&1 | tee colab_build_run.log
+colab exec -f scripts/orbit_wars_colab_build.py 2>&1 | tee colab_build_run.log
 
 # 3. Run full physical and observation parity verification (saves to colab_parity_run.log)
-colab exec -f colab_parity.py 2>&1 | tee colab_parity_run.log
+colab exec -f scripts/orbit_wars_colab_parity.py 2>&1 | tee colab_parity_run.log
 
 # 4. Run RL policy training verification (saves to colab_train_run.log)
-colab exec -f colab_train.py 2>&1 | tee colab_train_run.log
+colab exec -f scripts/orbit_wars_colab_train.py 2>&1 | tee colab_train_run.log
 ```
 
 ##### Weights & Biases (WandB) & Self-Play Setup for Training
@@ -49,7 +49,7 @@ To log training metrics to WandB on Colab or locally:
    ```env
    WANDB_API_KEY=your_actual_wandb_api_key
    ```
-3. When running `colab exec -f colab_train.py`, the remote execution script will read the key from the `.env` file, upload it to the Colab instance, and automatically enable the `--wandb` flag.
+3. When running `colab exec -f scripts/orbit_wars_colab_train.py`, the remote execution script will read the key from the `.env` file, upload it to the Colab instance, and automatically enable the `--wandb` flag.
 
 ##### Self-Play Training Mechanics (CPU vs. GPU)
 - **Historical Self-Play Pool (`selfplay.enabled = 1`):** Requires the native CUDA C++ backend. A portion of the environments run with one player slot controlled by the active policy and the opponent slot controlled by a frozen checkpoint from a historical pool to prevent policy cycling.
@@ -74,9 +74,9 @@ The structural layout of the repository and what to look for in each file:
 
 ### Configuration and Colab Scripts
 - [config/orbit_wars.ini](file:///home/dima/dev/PufferLib-4.0/config/orbit_wars.ini): Training hyperparameters, self-play settings, and vector dimensions.
-- [colab_setup.py](file:///home/dima/dev/PufferLib-4.0/colab_setup.py): Installs package dependencies on remote Colab VMs.
-- [colab_build.py](file:///home/dima/dev/PufferLib-4.0/colab_build.py): Compiles the C extension and runs standard vector tests under 30s.
-- [colab_parity.py](file:///home/dima/dev/PufferLib-4.0/colab_parity.py): Runs the complete C vs. Python parity test suite under 30s.
+- [scripts/orbit_wars_colab_setup.py](file:///home/dima/dev/PufferLib-4.0/scripts/orbit_wars_colab_setup.py): Installs package dependencies on remote Colab VMs.
+- [scripts/orbit_wars_colab_build.py](file:///home/dima/dev/PufferLib-4.0/scripts/orbit_wars_colab_build.py): Compiles the C extension and runs standard vector tests under 30s.
+- [scripts/orbit_wars_colab_parity.py](file:///home/dima/dev/PufferLib-4.0/scripts/orbit_wars_colab_parity.py): Runs the complete C vs. Python parity test suite under 30s.
 
 ---
 
@@ -111,7 +111,7 @@ The structural layout of the repository and what to look for in each file:
 
 ### Mission D: Policy Training
 - Goal: Start and evaluate reinforcement learning policy training on CPU/GPU.
-- Status: Verified training loops on remote CPU via `colab_train.py` with scaled-down network dimensions (`hidden_size = 32`, `num_layers = 1`) and `--slowly` configuration. Ready for large-scale GPU/CPU setups.
+- Status: Verified training loops on remote CPU via `scripts/orbit_wars_colab_train.py` with scaled-down network dimensions (`hidden_size = 32`, `num_layers = 1`) and `--slowly` configuration. Ready for large-scale GPU/CPU setups.
 
 ---
 

@@ -1,80 +1,65 @@
 # TODO — Decouple Raw State Parity from Neural Network Observation Scaling
 
 ## Goal
-Currently, observation normalization and scaling (such as dividing ship counts by 1000.0f or planet radius by 5.0f) are hardcoded directly inside the C simulator's ow_compute_observations function and mirrored in the Python test suite's compute_reference_observation function. 
+Currently, observation normalization and scaling (e.g., dividing ship counts by 1000.0f or coordinates by 100.0f) are hardcoded inside the C simulator's observation generation and mirrored in the Python parity test suite. Any change to the feature scaling for training experiments breaks the parity tests and requires modifying both codebases.
 
-This coupling means any experiment with a new feature representation or scaling factor (e.g., using log scaling or a different divisor) requires modifying both the C engine and the Python parity tests.
-
-We need to decouple the physical simulator logic/state verification from the neural network observation scaling layer. Parity tests should only assert the raw state, while the feature scaling should live in a separate, easily configurable layer.
+We will decouple them by introducing a raw relative observations buffer in the C struct. The parity tests will assert parity on this raw relative representation, while a separate C function handles the scaling before exposing the data to PufferLib for policy training.
 
 ---
 
-## Proposed Architecture
-
-### 1. Define a "Raw State Observation"
-The core C engine should output observations containing only raw physical values without any normalization:
-- Positions: raw float coordinates x, y (e.g., in [0.0, 100.0])
-- Sizes: raw float radius (e.g., 10.0, 1.0, etc.)
-- Armies: raw integer ship counts (no / 1000.0f)
-- Production: raw integer rates (no / 5.0f)
-- Timesteps: raw integer current step (no / 500.0f)
-
-### 2. Update Parity Verification to Test Raw State
-- The parity test suite (tests/test_orbit_wars_parity.py) will compare these raw C observations directly against the reference Python observations.
-- This ensures the parity assertions check the physics correctness, and will remain 100% stable regardless of how you choose to scale inputs for model training.
-
-### 3. Implement a Separate Feature Scaling Layer
-Create a modular feature engineering/scaling function (or class wrapper):
-- Option A (C-side scaling function): Define a wrapper function in orbit_wars.h (e.g., ow_engineer_features) that copies raw state observations to the final scaled/normalized float array exposed to PufferLib.
-- Option B (Python wrapper): Perform the scaling in Python before passing observations to the neural network.
+## State vs. Observations: What is Checked?
+- State: Represents the global, absolute coordinates and physical properties of all entities (e.g., absolute positions of planets/fleets, ship count, owner ID, active state). We verify absolute state in `assert_state_parity` (including physical attributes and parameters like angular velocity).
+- Observations: Represents the perspective-relative representation computed per agent (e.g., relative ownership, relative distances, relative headings, total own ships vs total enemy ships). We verify this relative mapping in the observation parity checks.
 
 ---
 
-## Code Walkthrough: What to Modify
+## Decoupled Architecture
 
-### File 1: ocean/orbit_wars/orbit_wars.h
-1. Locate ow_compute_observations:
-   Find where observation arrays are populated:
+### 1. Add raw_observations buffer to OrbitWars Struct
+In `ocean/orbit_wars/orbit_wars.h`, add a raw observations buffer to the `OrbitWars` struct definition:
+```c
+typedef struct {
+    // ... existing fields ...
+    float raw_observations[4][6484]; // Stores raw, unscaled perspective observations per player
+} OrbitWars;
+```
+
+### 2. Split Observation Logic in orbit_wars.h
+Divide the current `ow_compute_observations` into two distinct steps:
+1. `ow_compute_raw_observations(OrbitWars* env)`:
+   - Computes perspective-relative values (relative owner, relative coordinates, fleet angles, ship counts, etc.) but stores them **without any normalization scaling** (no divisions by 1000.0f, 5.0f, 100.0f, etc.).
+   - Writes the output directly to `env->raw_observations[p]`.
+2. `ow_scale_observations(OrbitWars* env)`:
+   - Copies `env->raw_observations[p]` to `env->obs_ptr[p]`.
+   - Performs the normalization scaling in-place on `env->obs_ptr[p]` (e.g., dividing ship counts by 1000.0f, coordinates by 100.0f, etc.) to match what PufferLib exposes to the neural network for training.
+3. Update `c_reset` and `c_step` to run both:
    ```c
-   static void ow_compute_observations(OrbitWars* env) { ... }
+   ow_compute_raw_observations(env);
+   ow_scale_observations(env);
    ```
-2. Remove Scaling:
-   Remove divisors and normalization math. For example:
-   - Change pl->x / OW_BOARD_SIZE to pl->x.
-   - Change (float)pl->ships / 1000.0f to (float)pl->ships.
-   - Change env->angular_velocity / 0.05f to env->angular_velocity.
-3. Add ow_engineer_features:
-   If using C-side scaling, implement it at the end of the observation loop to populate the final buffer exposed via env->obs_ptr[a].
 
-### File 2: tests/test_orbit_wars_parity.py
-1. Locate compute_reference_observation:
-   Remove matching scaling divisors from the reference observations:
+### 3. Update ctypes Struct and Parity Tests
+1. In `tests/test_orbit_wars_parity.py`, update `OrbitWarsStruct` to include the raw observations buffer:
    ```python
-   def compute_reference_observation(c_env, player_id, num_agents):
-       # Remove all divisions (/ 1000.0, / 5.0, / OW_BOARD_SIZE)
+   class OrbitWarsStruct(ctypes.Structure):
+       _fields_ = [
+           # ... existing fields ...
+           ("raw_observations", (ctypes.c_float * OW_OBS_SIZE) * OW_MAX_PLAYERS),
+       ]
    ```
-2. Verify Check Bounds:
-   Update np.allclose(ref_obs, c_obs_arr, atol=1e-4) to run on raw values.
+2. Remove all scaling divisions from `compute_reference_observation` in the Python test suite to make it output raw unscaled relative values.
+3. Update the parity test assertions to compare `c_env.raw_observations[p]` directly against the reference Python observations:
+   ```python
+   c_raw_obs = np.ctypeslib.as_array(c_env.raw_observations[p])
+   assert np.allclose(ref_raw_obs, c_raw_obs, atol=1e-4)
+   ```
 
-### File 3: tests/test_orbit_wars.py
-1. Locate "[Test 4] Observation range validation":
-   Adjust the range validation check since raw observations (e.g., ship counts, coordinates) will now exceed the standard [-5.0, 5.0] bounding box.
+### 4. Adjust Vector Range Validation Checks
+In `tests/test_orbit_wars.py`, adjust `[Test 4] Observation range validation` since the neural network observations will continue to use scaled values in `obs_ptr`, but we must make sure the test target matches our training expectations.
 
 ---
 
-## How to Verify
-After refactoring:
-1. Run local environment tests:
-   ```bash
-   .venv/bin/python tests/test_orbit_wars.py
-   ```
-2. Run local parity tests:
-   ```bash
-   .venv/bin/python tests/test_orbit_wars_parity.py
-   ```
-3. Run Colab verification runners:
-   ```bash
-   colab exec -f colab_build.py
-   colab exec -f colab_parity.py
-   ```
-   All checks must pass without any assertion errors.
+## Why this is simple and clean
+- Parity tests are completely decoupled: Any change to training scaling factors only requires editing the `ow_scale_observations` function in `orbit_wars.h`.
+- The parity test code (`test_orbit_wars_parity.py`) and the reference observation code will never need to be modified when scaling parameters change.
+- No Python wrappers or complex routing logic are introduced.

@@ -23,9 +23,9 @@ if not os.path.exists("pufferlib"):
 
 os.chdir("pufferlib")
 
-# Load WANDB_API_KEY from .env if present
+# Load WANDB_API_KEY from .env or env_file if present
 wandb_key = None
-for path in [".env", "../.env", "../../.env"]:
+for path in [".env", "../.env", "../../.env", "env_file", "../env_file", "../../env_file"]:
     if os.path.exists(path):
         with open(path, "r") as f:
             for line in f:

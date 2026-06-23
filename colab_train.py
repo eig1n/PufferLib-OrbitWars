@@ -31,7 +31,7 @@ sys.stdout.flush()
 log_file = open("../colab_train_run.log", "w")
 
 process = subprocess.Popen(
-    ["puffer", "train", "orbit_wars", "--slowly"],
+    [sys.executable, "-m", "pufferlib.pufferl", "train", "orbit_wars", "--slowly"],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     text=True,

@@ -40,7 +40,7 @@ for path in [".env", "../.env", "../../.env", "env_file", "../env_file", "../../
         if wandb_key:
             break
 
-cmd = [sys.executable, "-m", "pufferlib.pufferl", "train", "orbit_wars", "--slowly", "--vec.total-agents", "64", "--selfplay.enabled", "0"]
+cmd = [sys.executable, "-m", "pufferlib.pufferl", "train", "orbit_wars", "--slowly", "--vec.total-agents", "64", "--selfplay.enabled", "0", "--train.minibatch-size", "512"]
 if wandb_key:
     os.environ["WANDB_API_KEY"] = wandb_key
     try:

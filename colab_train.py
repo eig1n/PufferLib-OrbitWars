@@ -23,6 +23,35 @@ if not os.path.exists("pufferlib"):
 
 os.chdir("pufferlib")
 
+# Load WANDB_API_KEY from .env if present
+wandb_key = None
+for path in [".env", "../.env", "../../.env"]:
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() == "WANDB_API_KEY":
+                        wandb_key = v.strip().strip('"').strip("'")
+                        break
+        if wandb_key:
+            break
+
+cmd = [sys.executable, "-m", "pufferlib.pufferl", "train", "orbit_wars", "--slowly"]
+if wandb_key:
+    os.environ["WANDB_API_KEY"] = wandb_key
+    try:
+        import wandb
+        print("Logging in to Weights & Biases...")
+        wandb.login(key=wandb_key)
+    except Exception as e:
+        print(f"Warning: Failed to login to wandb via client: {e}")
+    cmd.append("--wandb")
+    print("Enabled Weights & Biases logging (--wandb) using key from .env")
+
 # Run PufferLib Training
 print("\n>>> Starting PufferLib training loop for 10 seconds... <<<")
 sys.stdout.flush()
@@ -31,7 +60,7 @@ sys.stdout.flush()
 log_file = open("../colab_train_run.log", "w")
 
 process = subprocess.Popen(
-    [sys.executable, "-m", "pufferlib.pufferl", "train", "orbit_wars", "--slowly"],
+    cmd,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     bufsize=1

@@ -45,9 +45,9 @@ print("\n--- [3/3] Installing Python dependencies ---")
 try:
     run("curl -LsSf https://astral.sh/uv/install.sh | sh", shell=True)
     os.environ["PATH"] += os.pathsep + os.path.expanduser("~/.local/bin")
-    run("uv pip install --system pybind11 numpy rich kaggle-environments -e pufferlib 2>/dev/null || pip install pybind11 numpy rich kaggle-environments -e pufferlib", shell=True)
+    run("uv pip install --system pybind11 numpy rich kaggle-environments wandb -e pufferlib 2>/dev/null || pip install pybind11 numpy rich kaggle-environments wandb -e pufferlib", shell=True)
 except Exception:
-    run("pip install pybind11 numpy rich kaggle-environments -e pufferlib", shell=True)
+    run("pip install pybind11 numpy rich kaggle-environments wandb -e pufferlib", shell=True)
 
 print("\n" + "=" * 60)
 print("SETUP COMPLETED SUCCESSFULLY")

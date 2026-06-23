@@ -25,7 +25,7 @@ bash build.sh orbit_wars --cpu
 .venv/bin/python tests/test_orbit_wars_parity.py
 ```
 
-#### 3. Run Google Colab Verification (From Local Machine) (Not necessary to do that unless want to test for speed or higher workloads for tests)
+#### 3. Run Google Colab Verification (From Local Machine)
 The Colab setup and test scripts are decoupled to prevent cell execution timeouts. Run them in order:
 ```bash
 # 1. Start a new Colab session and install dependencies
@@ -37,7 +37,19 @@ colab exec -f colab_build.py 2>&1 | tee colab_build_run.log
 
 # 3. Run full physical and observation parity verification (saves to colab_parity_run.log)
 colab exec -f colab_parity.py 2>&1 | tee colab_parity_run.log
+
+# 4. Run RL policy training verification (saves to colab_train_run.log)
+colab exec -f colab_train.py 2>&1 | tee colab_train_run.log
 ```
+
+##### Optional Weights & Biases (WandB) Logging
+To log training metrics to WandB on Colab:
+1. Create a `.env` file in the root of the project (already ignored by `.gitignore`).
+2. Add your API key:
+   ```env
+   WANDB_API_KEY=your_actual_wandb_api_key
+   ```
+3. When you run `colab exec -f colab_train.py`, the setup script will install `wandb` and the training runner will automatically log in and enable the `--wandb` flag.
 
 ## 1. Codebase Directory Map
 

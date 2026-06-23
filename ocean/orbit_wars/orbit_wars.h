@@ -50,8 +50,8 @@
                      OW_GLOBAL_OBS_FEAT)
 /* = 48*7 + 1024*6 + 4 = 336 + 6144 + 4 = 6484 */
 
-/* Action space: 3 multi-discrete dims */
-#define OW_NUM_ATNS          3
+/* Action space: 48 multi-discrete dims (16 launches * 3 dims) */
+#define OW_NUM_ATNS          48
 #define OW_NUM_ANGLE_BUCKETS 64
 #define OW_NUM_SHIP_BUCKETS  16
 
@@ -1327,10 +1327,6 @@ void c_step(OrbitWars* env) {
     for (int slot = 0; slot < env->num_agents; slot++) {
         float* act = env->action_ptr[slot];
 
-        int planet_idx  = (int)act[0];
-        int angle_bucket = (int)act[1];
-        int ship_bucket  = (int)act[2];
-
         /* Map slot to player ID */
         int player_id = -1;
         for (int p = 0; p < env->num_agents; p++) {
@@ -1338,27 +1334,34 @@ void c_step(OrbitWars* env) {
         }
         if (player_id < 0) player_id = slot;
 
-        /* Validate and decode */
-        if (ship_bucket <= 0) continue;  /* noop */
-        if (planet_idx < 0 || planet_idx >= OW_MAX_PLANETS) continue;
-        PlanetC* pl = &env->planets[planet_idx];
-        if (!pl->active || pl->owner != player_id) continue;
-        if (pl->ships <= 0) continue;
+        for (int a_idx = 0; a_idx < OW_MAX_ACTIONS_PER_PLAYER; a_idx++) {
+            int base = a_idx * 3;
+            int planet_idx   = (int)act[base + 0];
+            int angle_bucket = (int)act[base + 1];
+            int ship_bucket  = (int)act[base + 2];
 
-        float angle = (float)angle_bucket * (2.0f * M_PI) / (float)OW_NUM_ANGLE_BUCKETS;
-        int ships_to_send = (ship_bucket * pl->ships + 14) / 15; /* ceil(bucket * ships / 15) */
-        if (ships_to_send > pl->ships) ships_to_send = pl->ships;
-        if (ships_to_send <= 0) continue;
+            /* Validate and decode */
+            if (ship_bucket <= 0) continue;  /* noop */
+            if (planet_idx < 0 || planet_idx >= OW_MAX_PLANETS) continue;
+            PlanetC* pl = &env->planets[planet_idx];
+            if (!pl->active || pl->owner != player_id) continue;
+            if (pl->ships <= 0) continue;
 
-        int ai = env->num_raw_actions[player_id];
-        if (ai >= OW_MAX_ACTIONS_PER_PLAYER) continue;
+            float angle = (float)angle_bucket * (2.0f * M_PI) / (float)OW_NUM_ANGLE_BUCKETS;
+            int ships_to_send = (ship_bucket * pl->ships + 14) / 15; /* ceil(bucket * ships / 15) */
+            if (ships_to_send > pl->ships) ships_to_send = pl->ships;
+            if (ships_to_send <= 0) continue;
 
-        env->raw_actions[player_id][ai] = (RawActionC){
-            .from_planet_id = pl->id,
-            .angle = angle,
-            .ships = ships_to_send
-        };
-        env->num_raw_actions[player_id]++;
+            int ai = env->num_raw_actions[player_id];
+            if (ai >= OW_MAX_ACTIONS_PER_PLAYER) continue;
+
+            env->raw_actions[player_id][ai] = (RawActionC){
+                .from_planet_id = pl->id,
+                .angle = angle,
+                .ships = ships_to_send
+            };
+            env->num_raw_actions[player_id]++;
+        }
     }
 
     /* Run physics */

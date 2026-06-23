@@ -1,7 +1,12 @@
 #include "orbit_wars.h"
 #define OBS_SIZE 6484      /* 48*7 + 1024*6 + 4 */
-#define NUM_ATNS 3         /* planet_idx, angle_bucket, ship_bucket */
-#define ACT_SIZES {48, 64, 16}
+#define NUM_ATNS 48        /* 16 launches * 3 dims */
+#define ACT_SIZES { \
+    48, 64, 16, 48, 64, 16, 48, 64, 16, 48, 64, 16, \
+    48, 64, 16, 48, 64, 16, 48, 64, 16, 48, 64, 16, \
+    48, 64, 16, 48, 64, 16, 48, 64, 16, 48, 64, 16, \
+    48, 64, 16, 48, 64, 16, 48, 64, 16, 48, 64, 16  \
+}
 #define OBS_TENSOR_T FloatTensor
 
 #define MY_USES_PERM

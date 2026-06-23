@@ -21,3 +21,14 @@ int test_decode_interval_actions_for_slot(OrbitWars* env, int slot, const float*
     for (int p = 0; p < OW_MAX_PLAYERS; p++) env->num_raw_actions[p] = 0;
     return ow_decode_interval_actions_for_slot(env, slot, actions);
 }
+
+int test_aim_angle_to_planet(OrbitWars* env, int src_idx, int tgt_idx, int ships, double* out_angle) {
+    float angle = 0.0f;
+    int ok = ow_aim_angle_to_planet(env, src_idx, tgt_idx, ships, &angle);
+    if (out_angle) *out_angle = (double)angle;
+    return ok;
+}
+
+int test_validate_launch_angle(OrbitWars* env, int src_idx, int tgt_idx, int ships, double angle) {
+    return ow_validate_launch_angle(env, src_idx, tgt_idx, ships, (float)angle, NULL);
+}

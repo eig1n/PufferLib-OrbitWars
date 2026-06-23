@@ -1449,57 +1449,435 @@ void c_step_core(OrbitWars* env) {
     ow_compute_observations(env);
 }
 
-static float ow_aim_angle_to_planet(OrbitWars* env, int src_idx, int tgt_idx, int ships) {
-    PlanetC* src = &env->planets[src_idx];
-    PlanetC* tgt = &env->planets[tgt_idx];
-    double sx = src->x;
-    double sy = src->y;
-    double tx = tgt->x;
-    double ty = tgt->y;
-    double speed = ow_fleet_speed(ships);
-
-    if (env->planet_orbits[tgt_idx] && !tgt->is_comet) {
-        double angle = atan2(ty - sy, tx - sx);
-        for (int iter = 0; iter < 8; iter++) {
-            double dist = hypot(tx - sx, ty - sy);
-            double eta = dist / speed;
-            double future_angle = env->planet_angle[tgt_idx] + env->angular_velocity * eta;
-            tx = OW_SUN_X + env->planet_orbital_radius[tgt_idx] * cos(future_angle);
-            ty = OW_SUN_Y + env->planet_orbital_radius[tgt_idx] * sin(future_angle);
-            angle = atan2(ty - sy, tx - sx);
-        }
-        return ow_norm_angle((float)angle);
-    }
-
-    if (tgt->is_comet) {
-        for (int gi = 0; gi < env->num_comet_groups; gi++) {
-            CometGroupC* cg = &env->comet_groups[gi];
-            if (!cg->active) continue;
-            for (int m = 0; m < 4; m++) {
-                if (cg->planet_ids[m] != tgt->id) continue;
-                int best_idx = cg->path_index;
-                if (best_idx < 0) best_idx = 0;
-                double best_err = 1e30;
-                int remaining = cg->num_steps - best_idx;
-                if (remaining > 40) remaining = 40;
-                for (int k = 0; k < remaining; k++) {
-                    int path_idx = best_idx + k;
-                    double px = cg->paths_x[m][path_idx];
-                    double py = cg->paths_y[m][path_idx];
-                    double eta = hypot(px - sx, py - sy) / speed;
-                    double err = fabs(eta - (double)k);
-                    if (err < best_err) {
-                        best_err = err;
-                        tx = px;
-                        ty = py;
-                    }
-                }
-                return ow_norm_angle((float)atan2(ty - sy, tx - sx));
+static int ow_find_comet_member(OrbitWars* env, int planet_id, CometGroupC** out_cg, int* out_member) {
+    for (int gi = 0; gi < env->num_comet_groups; gi++) {
+        CometGroupC* cg = &env->comet_groups[gi];
+        if (!cg->active) continue;
+        for (int m = 0; m < 4; m++) {
+            if (cg->planet_ids[m] == planet_id) {
+                if (out_cg) *out_cg = cg;
+                if (out_member) *out_member = m;
+                return 1;
             }
         }
     }
+    return 0;
+}
 
-    return ow_norm_angle((float)atan2(ty - sy, tx - sx));
+static int ow_planet_position_at_tick(OrbitWars* env, int pi, int tick, double* x, double* y) {
+    PlanetC* pl = &env->planets[pi];
+    if (!pl->active) return 0;
+
+    if (pl->is_comet) {
+        if (tick <= 0) {
+            if (pl->x < 0.0) return 0;
+            *x = pl->x;
+            *y = pl->y;
+            return 1;
+        }
+
+        CometGroupC* cg = NULL;
+        int member = -1;
+        if (!ow_find_comet_member(env, pl->id, &cg, &member)) return 0;
+        int path_idx = cg->path_index + tick;
+        if (path_idx < 0 || path_idx >= cg->num_steps) return 0;
+        *x = cg->paths_x[member][path_idx];
+        *y = cg->paths_y[member][path_idx];
+        return 1;
+    }
+
+    if (env->planet_orbits[pi]) {
+        if (tick <= 0) {
+            *x = pl->x;
+            *y = pl->y;
+        } else {
+            double angle = env->planet_angle[pi] + env->angular_velocity * (double)(tick - 1);
+            *x = OW_SUN_X + env->planet_orbital_radius[pi] * cos(angle);
+            *y = OW_SUN_Y + env->planet_orbital_radius[pi] * sin(angle);
+        }
+        return 1;
+    }
+
+    *x = pl->x;
+    *y = pl->y;
+    return pl->x >= 0.0;
+}
+
+static int ow_planet_position_at_time(OrbitWars* env, int pi, double t, double* x, double* y) {
+    if (t < 0.0) return 0;
+    int tick = (int)floor(t);
+    double frac = t - (double)tick;
+    double x0, y0, x1, y1;
+    if (!ow_planet_position_at_tick(env, pi, tick, &x0, &y0)) return 0;
+    if (frac <= 1e-9) {
+        *x = x0;
+        *y = y0;
+        return 1;
+    }
+    if (!ow_planet_position_at_tick(env, pi, tick + 1, &x1, &y1)) {
+        x1 = x0;
+        y1 = y0;
+    }
+    *x = x0 + (x1 - x0) * frac;
+    *y = y0 + (y1 - y0) * frac;
+    return 1;
+}
+
+static int ow_planet_segment_for_turn(OrbitWars* env, int pi, int turn,
+                                      double* x0, double* y0,
+                                      double* x1, double* y1) {
+    if (!ow_planet_position_at_tick(env, pi, turn, x0, y0)) return 0;
+    if (*x0 < 0.0) return 0;
+    if (!ow_planet_position_at_tick(env, pi, turn + 1, x1, y1)) {
+        *x1 = *x0;
+        *y1 = *y0;
+    }
+    return 1;
+}
+
+static float ow_swept_pair_t(double ax, double ay, double bx, double by,
+                             double px0, double py0, double px1, double py1,
+                             double r) {
+    double d0x = ax - px0;
+    double d0y = ay - py0;
+    double dvx = (bx - ax) - (px1 - px0);
+    double dvy = (by - ay) - (py1 - py0);
+    double a = dvx * dvx + dvy * dvy;
+    double b = 2.0 * (d0x * dvx + d0y * dvy);
+    double c = d0x * d0x + d0y * d0y - r * r;
+    if (c <= 0.0) return 0.0f;
+    if (a < 1e-15) return -1.0f;
+    double disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) return -1.0f;
+    double sq = sqrt(disc);
+    double t1 = (-b - sq) / (2.0 * a);
+    double t2 = (-b + sq) / (2.0 * a);
+    if (t1 >= 0.0 && t1 <= 1.0) return (float)t1;
+    if (t2 >= 0.0 && t2 <= 1.0) return (float)t2;
+    return -1.0f;
+}
+
+static float ow_segment_oob_t(double x0, double y0, double x1, double y1) {
+    if (x0 < 0.0 || x0 > OW_BOARD_SIZE || y0 < 0.0 || y0 > OW_BOARD_SIZE) return 0.0f;
+    if (x1 >= 0.0 && x1 <= OW_BOARD_SIZE && y1 >= 0.0 && y1 <= OW_BOARD_SIZE) return -1.0f;
+
+    double best = 2.0;
+    double dx = x1 - x0;
+    double dy = y1 - y0;
+    if (dx < 0.0) {
+        double t = (0.0 - x0) / dx;
+        if (t >= 0.0 && t <= 1.0 && t < best) best = t;
+    } else if (dx > 0.0) {
+        double t = (OW_BOARD_SIZE - x0) / dx;
+        if (t >= 0.0 && t <= 1.0 && t < best) best = t;
+    }
+    if (dy < 0.0) {
+        double t = (0.0 - y0) / dy;
+        if (t >= 0.0 && t <= 1.0 && t < best) best = t;
+    } else if (dy > 0.0) {
+        double t = (OW_BOARD_SIZE - y0) / dy;
+        if (t >= 0.0 && t <= 1.0 && t < best) best = t;
+    }
+    return best <= 1.0 ? (float)best : 0.0f;
+}
+
+static int ow_aim_horizon_turns(OrbitWars* env, double speed) {
+    int horizon = OW_MAX_STEPS - env->current_step;
+    if (horizon <= 0) return 0;
+    if (horizon > OW_MAX_STEPS) horizon = OW_MAX_STEPS;
+    if (speed < 1e-6) return horizon;
+
+    int board_horizon = (int)ceil(160.0 / speed) + 2;
+    if (board_horizon < 1) board_horizon = 1;
+    if (horizon > board_horizon) horizon = board_horizon;
+    return horizon;
+}
+
+static double ow_ray_circle_distance(double x, double y, double dx, double dy,
+                                     double cx, double cy, double r) {
+    double fx = x - cx;
+    double fy = y - cy;
+    double b = 2.0 * (fx * dx + fy * dy);
+    double c = fx * fx + fy * fy - r * r;
+    if (c <= 0.0) return 0.0;
+    double disc = b * b - 4.0 * c;
+    if (disc < 0.0) return -1.0;
+    double sq = sqrt(disc);
+    double d1 = (-b - sq) * 0.5;
+    double d2 = (-b + sq) * 0.5;
+    if (d1 >= 0.0) return d1;
+    if (d2 >= 0.0) return d2;
+    return -1.0;
+}
+
+static double ow_ray_oob_distance(double x, double y, double dx, double dy) {
+    if (x < 0.0 || x > OW_BOARD_SIZE || y < 0.0 || y > OW_BOARD_SIZE) return 0.0;
+    double best = 1e30;
+    if (dx > 1e-12) {
+        double d = (OW_BOARD_SIZE - x) / dx;
+        if (d >= 0.0 && d < best) best = d;
+    } else if (dx < -1e-12) {
+        double d = (0.0 - x) / dx;
+        if (d >= 0.0 && d < best) best = d;
+    }
+    if (dy > 1e-12) {
+        double d = (OW_BOARD_SIZE - y) / dy;
+        if (d >= 0.0 && d < best) best = d;
+    } else if (dy < -1e-12) {
+        double d = (0.0 - y) / dy;
+        if (d >= 0.0 && d < best) best = d;
+    }
+    return best < 1e29 ? best : -1.0;
+}
+
+static int ow_validate_static_target_angle(OrbitWars* env, int src_idx, int tgt_idx,
+                                           int ships, float angle) {
+    PlanetC* src = &env->planets[src_idx];
+    PlanetC* tgt = &env->planets[tgt_idx];
+    if (!src->active || !tgt->active || ships <= 0 || tgt->x < 0.0) return 0;
+
+    double dx = cos((double)angle);
+    double dy = sin((double)angle);
+    double x = src->x + (src->radius + (double)OW_FLEET_SPAWN_OFFSET) * dx;
+    double y = src->y + (src->radius + (double)OW_FLEET_SPAWN_OFFSET) * dy;
+    double speed = ow_fleet_speed(ships);
+    int horizon = ow_aim_horizon_turns(env, speed);
+    if (horizon <= 0) return 0;
+
+    double target_dist = ow_ray_circle_distance(x, y, dx, dy, tgt->x, tgt->y, tgt->radius);
+    if (target_dist < 0.0) return 0;
+    double target_time = target_dist / speed;
+    if (target_time > (double)horizon + 1e-6) return 0;
+
+    double oob_dist = ow_ray_oob_distance(x, y, dx, dy);
+    if (oob_dist >= 0.0 && oob_dist <= target_dist + 1e-5) return 0;
+
+    double sun_dist = ow_ray_circle_distance(x, y, dx, dy, OW_SUN_X, OW_SUN_Y, OW_SUN_RADIUS);
+    if (sun_dist >= 0.0 && sun_dist <= target_dist + 1e-5) return 0;
+
+    for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
+        if (pi == tgt_idx) continue;
+        PlanetC* pl = &env->planets[pi];
+        if (!pl->active || pl->x < 0.0) continue;
+        if (env->planet_orbits[pi] || pl->is_comet) continue;
+        double blocker_dist = ow_ray_circle_distance(x, y, dx, dy, pl->x, pl->y, pl->radius);
+        if (blocker_dist >= 0.0 && blocker_dist <= target_dist + 1e-5) return 0;
+    }
+
+    int max_turn = (int)ceil(target_time);
+    if (max_turn > horizon) max_turn = horizon;
+    double fx = x;
+    double fy = y;
+    for (int turn = 0; turn <= max_turn; turn++) {
+        double nx = fx + speed * dx;
+        double ny = fy + speed * dy;
+        for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
+            if (pi == tgt_idx) continue;
+            PlanetC* pl = &env->planets[pi];
+            if (!pl->active || (!env->planet_orbits[pi] && !pl->is_comet)) continue;
+
+            double px0, py0, px1, py1;
+            if (!ow_planet_segment_for_turn(env, pi, turn, &px0, &py0, &px1, &py1)) continue;
+            float hit_t = ow_swept_pair_t(fx, fy, nx, ny, px0, py0, px1, py1, pl->radius);
+            if (hit_t >= 0.0f && (double)turn + (double)hit_t <= target_time + 1e-5) return 0;
+        }
+        fx = nx;
+        fy = ny;
+    }
+
+    return 1;
+}
+
+static int ow_validate_launch_angle(OrbitWars* env, int src_idx, int tgt_idx, int ships,
+                                    float angle, float* out_hit_turns) {
+    PlanetC* src = &env->planets[src_idx];
+    PlanetC* tgt = &env->planets[tgt_idx];
+    if (!src->active || !tgt->active || ships <= 0 || tgt->x < 0.0) return 0;
+
+    double dx = cos((double)angle);
+    double dy = sin((double)angle);
+    double x = src->x + (src->radius + (double)OW_FLEET_SPAWN_OFFSET) * dx;
+    double y = src->y + (src->radius + (double)OW_FLEET_SPAWN_OFFSET) * dy;
+    double speed = ow_fleet_speed(ships);
+    int horizon = ow_aim_horizon_turns(env, speed);
+    if (horizon <= 0) return 0;
+
+    for (int turn = 0; turn < horizon; turn++) {
+        double nx = x + speed * dx;
+        double ny = y + speed * dy;
+        float target_t = -1.0f;
+        float blocker_t = -1.0f;
+        int blocker_idx = -1;
+
+        for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
+            PlanetC* pl = &env->planets[pi];
+            if (!pl->active) continue;
+
+            double px0, py0, px1, py1;
+            if (!ow_planet_segment_for_turn(env, pi, turn, &px0, &py0, &px1, &py1)) continue;
+            float hit_t = ow_swept_pair_t(x, y, nx, ny, px0, py0, px1, py1, pl->radius);
+            if (hit_t < 0.0f) continue;
+
+            if (pi == tgt_idx) {
+                if (target_t < 0.0f || hit_t < target_t) target_t = hit_t;
+            } else if (blocker_t < 0.0f || hit_t < blocker_t) {
+                blocker_t = hit_t;
+                blocker_idx = pi;
+            }
+        }
+
+        float oob_t = ow_segment_oob_t(x, y, nx, ny);
+        float sun_t = ow_segment_circle_t((float)x, (float)y, (float)nx, (float)ny,
+                                          OW_SUN_X, OW_SUN_Y, OW_SUN_RADIUS);
+        const float eps = 1e-5f;
+        if (target_t >= 0.0f) {
+            if (blocker_t >= 0.0f && (blocker_t <= target_t + eps || blocker_idx < tgt_idx)) return 0;
+            if (oob_t >= 0.0f && oob_t <= target_t + eps) return 0;
+            if (sun_t >= 0.0f && sun_t <= target_t + eps) return 0;
+            if (out_hit_turns) *out_hit_turns = (float)turn + target_t;
+            return 1;
+        }
+
+        if (blocker_t >= 0.0f || oob_t >= 0.0f || sun_t >= 0.0f) return 0;
+        x = nx;
+        y = ny;
+    }
+
+    return 0;
+}
+
+static int ow_launch_time_error(OrbitWars* env, int src_idx, int tgt_idx, double speed,
+                                double t, double* err) {
+    PlanetC* src = &env->planets[src_idx];
+    double tx, ty;
+    if (!ow_planet_position_at_time(env, tgt_idx, t, &tx, &ty)) return 0;
+    double angle = atan2(ty - src->y, tx - src->x);
+    double spawn_x = src->x + (src->radius + (double)OW_FLEET_SPAWN_OFFSET) * cos(angle);
+    double spawn_y = src->y + (src->radius + (double)OW_FLEET_SPAWN_OFFSET) * sin(angle);
+    *err = hypot(tx - spawn_x, ty - spawn_y) / speed - t;
+    return 1;
+}
+
+static double ow_refine_intercept_time(OrbitWars* env, int src_idx, int tgt_idx,
+                                       double speed, double lo, double hi) {
+    double flo = 0.0, hi_err = 0.0;
+    if (!ow_launch_time_error(env, src_idx, tgt_idx, speed, lo, &flo)) return lo;
+    if (!ow_launch_time_error(env, src_idx, tgt_idx, speed, hi, &hi_err)) return hi;
+
+    for (int iter = 0; iter < 12; iter++) {
+        double mid = 0.5 * (lo + hi);
+        double fmid = 0.0;
+        if (!ow_launch_time_error(env, src_idx, tgt_idx, speed, mid, &fmid)) break;
+
+        double t = mid;
+        double deriv = 0.0;
+        double left = mid - 1e-3;
+        double right = mid + 1e-3;
+        if (left > lo && right < hi) {
+            double fl = 0.0, fr = 0.0;
+            if (ow_launch_time_error(env, src_idx, tgt_idx, speed, left, &fl) &&
+                ow_launch_time_error(env, src_idx, tgt_idx, speed, right, &fr)) {
+                deriv = (fr - fl) / (right - left);
+            }
+        }
+        if (fabs(deriv) > 1e-6) {
+            double nt = mid - fmid / deriv;
+            if (nt > lo && nt < hi) t = nt;
+        }
+        double ft = 0.0;
+        if (!ow_launch_time_error(env, src_idx, tgt_idx, speed, t, &ft)) break;
+
+        if ((flo <= 0.0 && ft <= 0.0) || (flo >= 0.0 && ft >= 0.0)) {
+            lo = t;
+            flo = ft;
+        } else {
+            hi = t;
+        }
+    }
+
+    return 0.5 * (lo + hi);
+}
+
+static int ow_try_aim_at_time(OrbitWars* env, int src_idx, int tgt_idx, int ships,
+                              double t, float* out_angle) {
+    PlanetC* src = &env->planets[src_idx];
+    double tx, ty;
+    if (!ow_planet_position_at_time(env, tgt_idx, t, &tx, &ty)) return 0;
+    float angle = ow_norm_angle((float)atan2(ty - src->y, tx - src->x));
+    if (!ow_validate_launch_angle(env, src_idx, tgt_idx, ships, angle, NULL)) return 0;
+    *out_angle = angle;
+    return 1;
+}
+
+static int ow_find_validated_moving_aim(OrbitWars* env, int src_idx, int tgt_idx,
+                                        int ships, float* out_angle) {
+    double speed = ow_fleet_speed(ships);
+    int horizon = ow_aim_horizon_turns(env, speed);
+    if (horizon <= 0) return 0;
+
+    double best_t[4] = {-1.0, -1.0, -1.0, -1.0};
+    double best_abs[4] = {1e30, 1e30, 1e30, 1e30};
+    double prev_t = 0.0;
+    double prev_err = 0.0;
+    int prev_ok = ow_launch_time_error(env, src_idx, tgt_idx, speed, prev_t, &prev_err);
+
+    for (int ti = 1; ti <= horizon; ti++) {
+        double t = (double)ti;
+        double err = 0.0;
+        int ok = ow_launch_time_error(env, src_idx, tgt_idx, speed, t, &err);
+        if (ok) {
+            double aerr = fabs(err);
+            for (int k = 0; k < 4; k++) {
+                if (aerr < best_abs[k]) {
+                    for (int j = 3; j > k; j--) {
+                        best_abs[j] = best_abs[j - 1];
+                        best_t[j] = best_t[j - 1];
+                    }
+                    best_abs[k] = aerr;
+                    best_t[k] = t;
+                    break;
+                }
+            }
+
+            if (prev_ok && ((prev_err >= 0.0 && err <= 0.0) ||
+                            (prev_err <= 0.0 && err >= 0.0))) {
+                double root = ow_refine_intercept_time(env, src_idx, tgt_idx, speed, prev_t, t);
+                if (ow_try_aim_at_time(env, src_idx, tgt_idx, ships, root, out_angle)) return 1;
+            }
+            prev_t = t;
+            prev_err = err;
+            prev_ok = 1;
+        } else {
+            prev_t = t;
+            prev_ok = 0;
+        }
+    }
+
+    for (int k = 0; k < 4; k++) {
+        if (best_t[k] >= 0.0 && best_abs[k] <= 2.0 &&
+            ow_try_aim_at_time(env, src_idx, tgt_idx, ships, best_t[k], out_angle)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int ow_aim_angle_to_planet(OrbitWars* env, int src_idx, int tgt_idx, int ships, float* out_angle) {
+    PlanetC* src = &env->planets[src_idx];
+    PlanetC* tgt = &env->planets[tgt_idx];
+    if (!src->active || !tgt->active || ships <= 0 || tgt->x < 0.0) return 0;
+
+    if (env->planet_orbits[tgt_idx] || tgt->is_comet) {
+        return ow_find_validated_moving_aim(env, src_idx, tgt_idx, ships, out_angle);
+    }
+
+    float direct_angle = ow_norm_angle((float)atan2(tgt->y - src->y, tgt->x - src->x));
+    if (ow_validate_static_target_angle(env, src_idx, tgt_idx, ships, direct_angle)) {
+        *out_angle = direct_angle;
+        return 1;
+    }
+
+    return 0;
 }
 
 typedef struct {
@@ -1638,7 +2016,10 @@ static int ow_decode_interval_actions_for_slot(OrbitWars* env, int slot, const f
 
                 int ai = env->num_raw_actions[player_id];
                 if (ai >= OW_MAX_ACTIONS_PER_PLAYER) break;
-                float angle = ow_aim_angle_to_planet(env, src_idx, sinks[best_ti].planet_idx, share);
+                float angle = 0.0f;
+                if (!ow_aim_angle_to_planet(env, src_idx, sinks[best_ti].planet_idx, share, &angle)) {
+                    continue;
+                }
                 env->raw_actions[player_id][ai] = (RawActionC){
                     .from_planet_id = env->planets[src_idx].id,
                     .angle = angle,

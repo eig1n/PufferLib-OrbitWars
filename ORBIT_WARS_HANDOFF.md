@@ -14,7 +14,8 @@ Implement the initial 1v1 fast training interface for Orbit Wars:
 - `tests/test_orbit_wars.py`: Local vector/runtime/range/termination/perf check. Now emits continuous random actions when all action sizes are `1`.
 - `tests/test_orbit_wars_parity.py`: C vs Python physics/raw-observation parity suite. Compiles helper with `-DPARITY_TESTING`.
 - `tests/orbit_wars_test_lib.c`: C helper exports for parity and decoder tests.
-- `tests/test_orbit_wars_decoder.py`: Focused direct decoder assertions for slot order, overlap, signs, multi-source capture, reinforcement, clamping, and noops.
+- `tests/test_orbit_wars_decoder.py`: Focused direct decoder assertions for interval matching and validated aiming.
+- `todo.md`: Current implementation checklist with concrete instructions for follow-up agents.
 - `scripts/orbit_wars_local_checks.sh`: Runs build, decoder, runtime, and parity checks with logs saved to `logs/orbit_wars/<timestamp>/`.
 - `config/orbit_wars.ini`: Main training config. For local/CPU training, set `selfplay.enabled=0`.
 - `orbit-wars/orbit_wars.py`: Reference Kaggle Python implementation. Do not treat as training code.
@@ -59,7 +60,7 @@ Implement the initial 1v1 fast training interface for Orbit Wars:
 - Source/sink pairs match by interval overlap. Narrower intervals receive a precision preference.
 - Targets are ranked by accumulated pair strength.
 - Decoder supports attack/capture and owned-planet reinforcement.
-- Launches are emitted as existing `RawActionC {from_planet_id, angle, ships}` so simulator physics stays unchanged.
+- Decoder launches are emitted as existing `RawActionC {from_planet_id, angle, ships}` only after C aiming validates the intended target is hit before blockers/sun/OOB. Raw simulator physics stays unchanged.
 - Production observations are compact and planet-centric: `872 = 48*18 + 8`.
 - `PARITY_TESTING` keeps raw 6484-float observations and parity comparisons intact.
 
@@ -67,8 +68,12 @@ Implement the initial 1v1 fast training interface for Orbit Wars:
 - Added compact production observation path in C.
 - Preserved raw observation parity path under `PARITY_TESTING`.
 - Replaced production discrete launch action decoding with interval decoding.
-- Added simple deterministic aiming for static/orbiting/comet targets.
-- Added decoder test hooks and focused decoder test file.
+- Added validated C aiming for decoded launches:
+  - Static target: analytic direct aim with blocker/sun/OOB validation.
+  - Orbiting target: fixed-point/Newton-style time solve plus swept validation.
+  - Comet target: path-indexed time solve plus swept validation.
+  - Decoder skips launch if no validated intercept exists.
+- Added decoder test hooks and focused tests for static aim, blocker rejection/no-launch fallback, orbiting intercept, and comet path aim.
 - Updated runtime tests for continuous actions.
 - Added `scripts/orbit_wars_local_checks.sh` and saved latest local test logs.
 - Added first-pass Python policy deployment adapter.
@@ -81,15 +86,20 @@ Implement the initial 1v1 fast training interface for Orbit Wars:
 - `compact_features(obs, player_id)` converts a Kaggle observation dict into the same 872-float compact policy observation exposed by the production C env.
 - `policy_actions_to_moves(actions, obs, player_id)` converts one 96-float policy action vector into Kaggle moves `[[from_planet_id, angle, ships], ...]`.
 - The decoder uses the same current abstraction as C: ascending-id planet slots, `(x, r)` per slot, positive `r` as owned-source intent, negative `r` as sink intent, overlap-based source/target matching, safe source drain, and max 16 launches.
-- It is first-pass only. It still needs validated projection and aiming parity before serious checkpoint evaluation.
+- It is first-pass only. It still needs validated projection and C aiming parity before serious checkpoint evaluation in Kaggle Python.
 
-## Commands Already Tried
+## Validation Commands
 - `PATH=.venv/bin:$PATH bash build.sh orbit_wars --cpu`
+  - Builds the production CPU extension.
 - `.venv/bin/python -c 'import tests.test_orbit_wars_decoder as t; [getattr(t, n)() for n in dir(t) if n.startswith("test_")]'`
-- `.venv/bin/python tests/test_orbit_wars.py`
-- `.venv/bin/python tests/test_orbit_wars_parity.py`
-- `bash scripts/orbit_wars_local_checks.sh` was syntax-checked only; the individual commands above were run and logged.
-- After syncing upstream PufferLib, build, decoder checks, runtime suite, and parity suite were run again and passed.
+  - Tests interval matching, source/sink behavior, validated static/orbiting/comet aiming, blocker rejection, and no-launch fallback.
+- `PYTHONUNBUFFERED=1 .venv/bin/python tests/test_orbit_wars.py`
+  - Tests build, vec reset, random continuous stepping, observation range, episode termination, and local throughput.
+- `PYTHONUNBUFFERED=1 .venv/bin/python tests/test_orbit_wars_parity.py`
+  - Tests raw C physics and raw observations against the Kaggle/Python implementation, including 4-player and comet parity.
+- `bash scripts/orbit_wars_local_checks.sh`
+  - Intended logged wrapper for the above checks.
+- Latest final run: build, decoder tests, runtime suite, and full parity suite passed.
 
 Latest saved logs:
 - `logs/orbit_wars_build_cpu.log`
@@ -102,30 +112,27 @@ Latest saved logs:
 - Running the build in the sandbox failed because `ccache` writes outside the workspace. It passed with escalation.
 - `pytest` is not installed in `.venv`; decoder tests were run by directly invoking test functions.
 - Kaggle/LiteLLM emitted network warnings while importing tests; tests still passed.
-- Current runtime performance after compact interface was about 13k agent-steps/sec in `tests/test_orbit_wars.py` on this local run.
+- Current local runtime after validated aiming: about `4,072` agent-steps/sec in `tests/test_orbit_wars.py` with 64 agents, 1 thread, and dense random continuous actions. This benchmark is intentionally harsh because random actions activate many interval sources/sinks.
+- Target is roughly `700k` agent-steps/sec on a rented Vast.ai 5090-class instance. Do not assume current speed is enough; benchmark on that hardware before long training.
+- Easiest high-impact speedups without changing public action/obs dimensions:
+  - Reduce decoded work: cap decoded launches lower than raw `OW_MAX_ACTIONS_PER_PLAYER=16`, e.g. 2-4 launches/player/step.
+  - Top-K filter active source/sink intervals before aiming, or raise the active `r` threshold during early training.
+  - Bias policy action head toward noops/small `r` so early random policy is sparse.
+  - Reduce `OW_MAX_TARGETS` / `OW_MAX_SOURCES_PER_TARGET` for training decoder only.
+  - Use `num_threads > 1`, larger `total_agents`, release/native compiler flags, and profile on the target CPU.
+- Most promising speedups while keeping raw parity correct:
+  - Keep `c_step_core` unchanged and parity-tested; optimize only decoder/projection/training interface.
+  - Add cheap broad-phase caches for source-target visibility/blockers and moving target intercept candidates.
+  - Use a staged decoder: cheap top-K pair selection first, validated aiming only for final candidates.
+  - Add metrics for launches/step, noop rate, invalid/no-launch rate, capture/reinforce split, and SPS so speed/learning tradeoffs are visible.
 
 ## Next Steps
-1. Improve engineered projection accuracy:
-   - Static planet impact: analytic ray-circle time.
-   - Orbiting planet impact: broad-phase plus fixed-iteration root solve and swept validation.
-   - Comets: path-index future positions with segment validation.
-   - Ignore low-confidence fleet target estimates.
-2. Upgrade aiming validation:
-   - Static target: direct angle plus blocker validation.
-   - Orbiting target: fastest valid intercept with fixed-point/Newton iterations and swept validation.
-   - Comet target: path-indexed future position and validation.
-   - Skip launches with no validated intercept.
-3. Tighten Python deployment mirror:
-   - `orbit-wars/puffer_agent/policy_adapter.py` currently mirrors dimensions/features/decoder at a first-pass level.
-   - It still needs the same validated projection and aiming semantics as C before checkpoint evaluation.
-4. Run Colab CPU checks:
-   - Use `uv`/`.venv`.
-   - Run `scripts/orbit_wars_colab_build.py`, `scripts/orbit_wars_colab_parity.py`, `scripts/orbit_wars_colab_train.py`.
-   - Use `selfplay.enabled=0`, small `total_agents`, and forced checkpoint save.
-5. Run short Colab GPU 1v1 train.
-6. Download latest `checkpoints/orbit_wars/**/*.bin`.
-7. Evaluate checkpoint in original Kaggle Python environment against random, nearest-sniper, and producer baselines.
-8. Track winrate, terminal score, invalid/noop rate, launches per step, and capture/reinforce split.
+See `todo.md` for concrete implementation instructions. Priority summary:
+1. Add projection features using the same validated hit logic so compact observations report truthful incoming ETA/pressure.
+2. Improve decoder performance until training SPS is viable; keep raw parity intact and rerun parity after every simulator-touching change.
+3. Mirror validated aiming/projection in `orbit-wars/puffer_agent/policy_adapter.py`.
+4. Run Colab CPU build/parity/short train, then GPU short train. Functionally ready now; performance may still need tuning before long runs.
+5. Evaluate exported checkpoints locally in the original Kaggle environment against random, nearest-sniper, and producer baselines.
 
 ## Do Not Reread Unless Needed
 - `vendor/**`: external/generated dependency code.
@@ -149,3 +156,4 @@ Implementation files from this task:
 - `scripts/orbit_wars_colab_train.py`
 - `scripts/orbit_wars_colab_test.py`
 - `ORBIT_WARS_HANDOFF.md`
+- `todo.md`

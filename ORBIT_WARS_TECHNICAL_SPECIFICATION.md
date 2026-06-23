@@ -198,13 +198,18 @@ Rewards are terminal outcomes calculated at the end of the episode:
 
 ---
 
-## 6. Self-Play and Tag Swap Boundaries
+## 6. Self-Play, Tag Swap Boundaries, and Bank Metrics
 
-To support historical self-play matchmaking (orchestrated in pufferlib/selfplay.py), the C interface declares:
-- #define MY_USES_TAGS in binding.c.
-- tag: Environment index set by Python to label player routing (e.g. primary training agent vs. frozen snapshotted opponent).
-- boundary_reached: Set to 1 by C on the exact step the episode terminates. PufferLib monitors this flag to swap frozen policies at game boundary ticks.
-- slot_for_color: Keeps track of starting slot color permutations to prevent positional training bias.
+To support historical self-play matchmaking (orchestrated in pufferlib/selfplay.py) and track training progression, the environment implements:
+- **`#define MY_USES_TAGS`**: Declared in `binding.c` to enable historical self-play capabilities in the PufferLib framework.
+- **Opponent Routing (`tag`)**: Environment index `tag` (from `1` to `OW_MAX_BANKS` i.e. 8) is set by Python's self-play matching to label player routing (identifying the active frozen opponent loaded into the secondary slot).
+- **Per-Bank Historical Logging**: 
+  - The C `Log` struct maintains array trackers `hist_score_bank` and `hist_n_bank` for up to 8 snapshot banks.
+  - When the game ends, the score of the primary training agent (slot 0) is logged to `hist_score_bank[tag - 1]` and `hist_n_bank[tag - 1]`.
+  - These metrics are exposed through the dictionary in `binding.c`'s `my_log` under the keys `hist_score_bank_0` to `hist_score_bank_7` and `hist_n_bank_0` to `hist_n_bank_7`.
+  - Global self-play score and game counts are also logged to `hist_score` and `hist_n`.
+- **Boundary Detection (`boundary_reached`)**: Set to `1` by C on the exact step the episode terminates. PufferLib monitors this flag to swap frozen policy snapshots in the pool at episode transitions.
+- **Color Permutation (`slot_for_color`)**: Shuffles starting positions dynamically to prevent positional training bias.
 
 ---
 

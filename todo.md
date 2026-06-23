@@ -43,7 +43,7 @@ Do not change raw observation layout or compact observation size.
 Current local runtime: about `4,072` agent-steps/sec in `tests/test_orbit_wars.py` with 64 agents, 1 thread, dense random actions. Target: roughly `700k` agent-steps/sec on rented Vast.ai hardware. First measure on target hardware before large rewrites.
 
 Fastest safe options:
-1. Add a training-only decoded launch cap, e.g. `OW_MAX_DECODED_ACTIONS_PER_PLAYER = 2` or `4`, while leaving raw `OW_MAX_ACTIONS_PER_PLAYER = 16` for parity.
+1. Add a training-only decoded launch cap, e.g. `OW_MAX_DECODED_ACTIONS_PER_PLAYER = 3` or `6`, while leaving raw `OW_MAX_ACTIONS_PER_PLAYER = 16` for parity.
 2. Top-K filter source and sink intervals before aiming:
    - Keep only strongest owned sources and strongest sinks per player.
    - Run pair scoring/aim validation only for final candidate pairs.
@@ -102,10 +102,10 @@ Goal: evaluate a trained checkpoint inside the original Kaggle Python environmen
 Instructions:
 1. Export/download latest `checkpoints/orbit_wars/**/*.bin`.
 2. Load policy through `orbit-wars/puffer_agent/policy_adapter.py`.
-3. Build a local evaluator that runs original Kaggle `orbit_wars` games against:
+3. Build a local evaluator that runs original Kaggle `orbit_wars` games against (check orbit-wars/agents.md for info how to do that)
    - random
    - nearest-sniper/simple heuristic
-   - existing producer baseline
+   - existing producer baseline (also in orbit-wars folder)
 4. Report winrate, terminal score, invalid/noop rate, launches/step, and common failure cases.
 5. If adapter/C mismatch appears, fix adapter parity before drawing training conclusions.
 

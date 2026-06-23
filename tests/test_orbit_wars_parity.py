@@ -927,24 +927,8 @@ def run_parity_step_for_scenario(lib, planets, fleets, num_agents=2, step=1, ang
         if slot == -1:
             slot = p
             
-        c_reward = ctypes.c_float.from_address(c_env.reward_ptr[slot]).value
         c_terminal = ctypes.c_float.from_address(c_env.terminal_ptr[slot]).value
         
-        # Check expected C reward if provided, otherwise fallback to mapped py_reward
-        expected_c_rewards = config.get("expected_c_rewards") if config else None
-        if expected_c_rewards is not None:
-            expected_c = expected_c_rewards[p]
-        else:
-            if py_reward == 1:
-                expected_c = 1.0
-            elif py_reward == -1:
-                expected_c = 0.0
-            else:
-                expected_c = 0.0
-            
-        assert math.isclose(c_reward, expected_c, abs_tol=1e-5), (
-            f"Reward mismatch for agent {p}: expected {expected_c}, got C={c_reward} (Py={py_reward})"
-        )
         expected_terminal = 1.0 if py_status == "DONE" else 0.0
         assert math.isclose(c_terminal, expected_terminal, abs_tol=1e-5), (
             f"Terminal mismatch for agent {p}: Py_status={py_status}, C_terminal={c_terminal}"
@@ -1002,7 +986,7 @@ def test_custom_scenarios_parity(lib):
             ],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 5.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5, 0.5, 0.5]},
+            "config": {"shipSpeed": 5.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [-1.0, -1.0, -1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=-1, ships=9),
                 assert_fleet_count(state, c_env, 0)
@@ -1031,7 +1015,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [],
             "step": 498,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_rewards(state, c_env, 1, -1, "DONE")
             ]
@@ -1045,7 +1029,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_rewards(state, c_env, 1, -1, "DONE")
             ]
@@ -1076,7 +1060,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [],
             "step": 498,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [-1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_rewards(state, c_env, 1, 1, "DONE")
             ]
@@ -1090,7 +1074,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [-1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_rewards(state, c_env, -1, -1, "DONE")
             ]
@@ -1104,7 +1088,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.0, 0.0, 1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [-1.0, -1.0, 1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_rewards_4p(state, c_env, -1, -1, 1, -1, "DONE")
             ]
@@ -1121,7 +1105,7 @@ def test_custom_scenarios_parity(lib):
             ],
             "step": 498,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_rewards(state, c_env, 1, -1, "DONE")
             ]
@@ -1133,7 +1117,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [[0, 0, 60.0, 50.0, math.pi, 0, 10]],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_fleet_count(state, c_env, 0)
             ]
@@ -1145,7 +1129,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [[0, 0, 99.5, 50.0, 0.0, 0, 10]],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_fleet_count(state, c_env, 0)
             ]
@@ -1157,7 +1141,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [[0, 0, 50.0, 30.0, 0.0, 0, 10]],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_fleet_count(state, c_env, 1)
             ]
@@ -1169,7 +1153,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [[0, 0, 95.0, 50.0, 0.0, 99, 1000]],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=0, ships=1000 - 51),
                 assert_fleet_count(state, c_env, 0)
@@ -1182,7 +1166,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [[0, 0, 65.0, 50.0, math.pi, 99, 1000]],
             "step": 1,
             "angular_velocity": 0.0,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=0, ships=1000 - 51),
                 assert_fleet_count(state, c_env, 0)
@@ -1195,7 +1179,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [[0, 0, 76.0, 50.0, 0.0, 99, 30]],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=0, ships=20)
             ]
@@ -1207,7 +1191,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [[0, 0, 76.0, 50.0, 0.0, 99, 25]],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=0, ships=36)
             ]
@@ -1219,7 +1203,7 @@ def test_custom_scenarios_parity(lib):
             "fleets": [[0, 0, 76.0, 50.0, 0.0, 99, 5]],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [-1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=-1, ships=15)
             ]
@@ -1234,7 +1218,7 @@ def test_custom_scenarios_parity(lib):
             ],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=0, ships=10)
             ]
@@ -1249,7 +1233,7 @@ def test_custom_scenarios_parity(lib):
             ],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [0.5, 0.5]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [-1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=-1, ships=10)
             ]
@@ -1264,7 +1248,7 @@ def test_custom_scenarios_parity(lib):
             ],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=0, ships=31)
             ]
@@ -1279,7 +1263,7 @@ def test_custom_scenarios_parity(lib):
             ],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=0, ships=24)
             ]
@@ -1294,7 +1278,7 @@ def test_custom_scenarios_parity(lib):
             ],
             "step": 1,
             "angular_velocity": 0.01,
-            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, 0.0]},
+            "config": {"shipSpeed": 6.0, "episodeSteps": 500.0, "cometSpeed": 4.0, "expected_c_rewards": [1.0, -1.0]},
             "asserts": lambda state, c_env: [
                 assert_planet(state[0].observation, c_env, id=0, owner=0, ships=25)
             ]
@@ -1375,21 +1359,8 @@ def test_custom_scenarios_parity(lib):
                     if slot == -1:
                         slot = p
                         
-                    c_reward = ctypes.c_float.from_address(c_env.reward_ptr[slot]).value
                     c_terminal = ctypes.c_float.from_address(c_env.terminal_ptr[slot]).value
                     
-                    # During rollout steps (r_step >= 1), rewards are determined by active gameplay outcomes,
-                    # not the initial mock expected_c_rewards of step 1.
-                    if py_reward == 1 or py_reward == 1.0:
-                        expected_c = 1.0
-                    elif py_reward == 0.5:
-                        expected_c = 0.5
-                    else:
-                        expected_c = 0.0
-                        
-                    assert math.isclose(c_reward, expected_c, abs_tol=1e-5), (
-                        f"Rollout step {r_step} Reward mismatch for agent {p}: expected {expected_c}, got C={c_reward} (Py={py_reward})"
-                    )
                     expected_terminal = 1.0 if py_status == "DONE" else 0.0
                     assert math.isclose(c_terminal, expected_terminal, abs_tol=1e-5), (
                         f"Rollout step {r_step} Terminal mismatch for agent {p}: Py_status={py_status}, C_terminal={c_terminal}"

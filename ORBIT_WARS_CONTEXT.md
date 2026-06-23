@@ -42,14 +42,19 @@ colab exec -f colab_parity.py 2>&1 | tee colab_parity_run.log
 colab exec -f colab_train.py 2>&1 | tee colab_train_run.log
 ```
 
-##### Optional Weights & Biases (WandB) Logging
-To log training metrics to WandB on Colab:
+##### Weights & Biases (WandB) & Self-Play Setup for Training
+To log training metrics to WandB on Colab or locally:
 1. Create a `.env` file in the root of the project (already ignored by `.gitignore`).
 2. Add your API key:
    ```env
    WANDB_API_KEY=your_actual_wandb_api_key
    ```
-3. When you run `colab exec -f colab_train.py`, the setup script will install `wandb` and the training runner will automatically log in and enable the `--wandb` flag.
+3. When running `colab exec -f colab_train.py`, the remote execution script will read the key from the `.env` file, upload it to the Colab instance, and automatically enable the `--wandb` flag.
+
+##### Self-Play Training Mechanics (CPU vs. GPU)
+- **Historical Self-Play Pool (`selfplay.enabled = 1`):** Requires the native CUDA C++ backend. A portion of the environments run with one player slot controlled by the active policy and the opponent slot controlled by a frozen checkpoint from a historical pool to prevent policy cycling.
+- **CPU Training (`selfplay.enabled = 0`):** Because CPU setups (or local machines without GPU support) cannot run the native CUDA backend, you must set `selfplay.enabled = 0` in `config/orbit_wars.ini`.
+- **Shared-Policy Self-Play:** Under `selfplay.enabled = 0`, the agent still plays against itself, but both player slots (Player 1 and Player 2) are controlled by the **exact same active, training policy**. The agent collects experiences from both winning and losing perspectives of its latest self to update the model weights.
 
 ## 1. Codebase Directory Map
 
@@ -78,6 +83,7 @@ The structural layout of the repository and what to look for in each file:
 ## 2. Current Project Status
 
 - Physics and Observation Parity: 100% achieved and decoupled. The C simulator has been mathematically verified against Python on multiple seed rollouts, 22 custom scenarios, and 4 ported symmetry tests. Observation scaling is fully decoupled (Mission C complete): raw unscaled observations are verified for parity, and scaling/normalization runs in a separate feature engineering pass.
+- Reward Scheme: Rewards are sparse terminal outcomes set to `1.0f` for a sole winner, and `-1.0f` otherwise (for losses and draws/ties). The C simulator has decoupled reward comparisons from the physics parity test suite, allowing rewards to be decided and tuned independently from the original Python reference. For historical self-play logs, outcomes are mapped to `[0, 1]` (win: `1.0`, draw: `0.5`, loss: `0.0`) to keep Elo calculations mathematically correct.
 - Execution Performance: Optimizations from Mission A (precomputing planet/comet projected coordinates, precalculating player ship totals, direct scaled observation pass, and memset zero-clearing) keep execution extremely fast, achieving ~118,000 agent-steps/sec on Colab CPU environments and ~143,000 agent-steps/sec on local setups.
 - Git State: Git tracking is set up with remote branch main at github.com:eig1n/PufferLib-OrbitWars.git.
 

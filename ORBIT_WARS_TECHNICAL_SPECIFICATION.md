@@ -191,9 +191,8 @@ Observations are generated symmetrically relative to the observing player index 
 
 ### Reward Mappings
 Rewards are terminal outcomes calculated at the end of the episode:
-- Winner: 1.0f
-- Draw/Tie: 0.5f
-- Loser: 0.0f
+- Winner (Sole): 1.0f
+- Draw/Tie/Loser: -1.0f
 - Non-terminal steps: 0.0f
 
 ---

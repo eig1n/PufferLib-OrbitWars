@@ -41,19 +41,36 @@
 #define OW_COMET_PRODUCTION 1
 #define OW_FLEET_SPAWN_OFFSET 0.1f
 
-/* Observation layout: 48 planets × 7 features + 1024 fleets × 6 features + 4 global */
-#define OW_PLANET_OBS_FEAT  7
-#define OW_FLEET_OBS_FEAT   6
-#define OW_GLOBAL_OBS_FEAT  4
-#define OW_OBS_SIZE (OW_MAX_PLANETS * OW_PLANET_OBS_FEAT + \
-                     OW_MAX_FLEETS * OW_FLEET_OBS_FEAT + \
-                     OW_GLOBAL_OBS_FEAT)
-/* = 48*7 + 1024*6 + 4 = 336 + 6144 + 4 = 6484 */
+/* Raw parity observation layout: 48 planets × 7 + 1024 fleets × 6 + 4 global */
+#define OW_RAW_PLANET_OBS_FEAT  7
+#define OW_RAW_FLEET_OBS_FEAT   6
+#define OW_RAW_GLOBAL_OBS_FEAT  4
+#define OW_RAW_OBS_SIZE (OW_MAX_PLANETS * OW_RAW_PLANET_OBS_FEAT + \
+                         OW_MAX_FLEETS * OW_RAW_FLEET_OBS_FEAT + \
+                         OW_RAW_GLOBAL_OBS_FEAT)
+#define OW_PLANET_OBS_FEAT OW_RAW_PLANET_OBS_FEAT
+#define OW_FLEET_OBS_FEAT OW_RAW_FLEET_OBS_FEAT
+#define OW_GLOBAL_OBS_FEAT OW_RAW_GLOBAL_OBS_FEAT
 
-/* Action space: 48 multi-discrete dims (16 launches * 3 dims) */
-#define OW_NUM_ATNS          48
+/* Compact training observation layout: planet-centric slots + globals. */
+#define OW_TRAIN_PLANET_OBS_FEAT 18
+#define OW_TRAIN_GLOBAL_OBS_FEAT 8
+#define OW_TRAIN_OBS_SIZE (OW_MAX_PLANETS * OW_TRAIN_PLANET_OBS_FEAT + \
+                           OW_TRAIN_GLOBAL_OBS_FEAT)
+
+#ifdef PARITY_TESTING
+#define OW_OBS_SIZE OW_RAW_OBS_SIZE
+#else
+#define OW_OBS_SIZE OW_TRAIN_OBS_SIZE
+#endif
+
+/* Action space: one continuous x/r pair per canonical planet slot. */
+#define OW_NUM_ATNS          (OW_MAX_PLANETS * 2)
 #define OW_NUM_ANGLE_BUCKETS 64
 #define OW_NUM_SHIP_BUCKETS  16
+#define OW_INTERVAL_EPS      (1.0f / 32.0f)
+#define OW_MAX_TARGETS       6
+#define OW_MAX_SOURCES_PER_TARGET 3
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
@@ -221,6 +238,49 @@ static inline float ow_clampf(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static inline float ow_norm_angle(float a) {
+    while (a < 0.0f) a += 2.0f * (float)M_PI;
+    while (a >= 2.0f * (float)M_PI) a -= 2.0f * (float)M_PI;
+    return a;
+}
+
+static int ow_player_for_slot(OrbitWars* env, int slot) {
+    for (int p = 0; p < env->num_agents; p++) {
+        if (env->slot_for_color[p] == slot) return p;
+    }
+    return slot;
+}
+
+static void ow_planet_slots_by_id(OrbitWars* env, int slots[OW_MAX_PLANETS]) {
+    for (int i = 0; i < OW_MAX_PLANETS; i++) slots[i] = -1;
+    for (int out = 0; out < OW_MAX_PLANETS; out++) {
+        int best = -1;
+        for (int i = 0; i < OW_MAX_PLANETS; i++) {
+            if (!env->planets[i].active) continue;
+            int used = 0;
+            for (int k = 0; k < out; k++) {
+                if (slots[k] == i) { used = 1; break; }
+            }
+            if (used) continue;
+            if (best < 0 || env->planets[i].id < env->planets[best].id) best = i;
+        }
+        if (best < 0) break;
+        slots[out] = best;
+    }
+}
+
+static float ow_interval_pair_strength(float xs, float rs, float xt, float rt) {
+    float ars = fabsf(rs);
+    float art = fabsf(rt);
+    float overlap = ars + art - fabsf(xs - xt);
+    if (overlap <= 0.0f) return 0.0f;
+    float denom = ars + art;
+    if (denom < 1e-6f) return 0.0f;
+    float broadness = ow_clampf((ars + art) * 0.5f, 0.0f, 1.0f);
+    float precision_bonus = 1.0f / (0.25f + broadness);
+    return ow_clampf((overlap / denom) * precision_bonus, 0.0f, 1.0f);
 }
 
 /*
@@ -701,67 +761,135 @@ static void ow_process_observations(OrbitWars* env, int a, const float* raw_obs,
 #else
 static void ow_compute_and_scale_observations(OrbitWars* env, int a, float* out_obs, const int* total_ships, int sum_all_ships) {
     int na = env->num_agents;
-    int player_id = -1;
-    for (int p = 0; p < na; p++) {
-        if (env->slot_for_color[p] == a) { player_id = p; break; }
-    }
-    if (player_id < 0) player_id = a;
+    int player_id = ow_player_for_slot(env, a);
+    int slots[OW_MAX_PLANETS];
+    float own_pressure[OW_MAX_PLANETS] = {0};
+    float enemy_pressure[OW_MAX_PLANETS] = {0};
+    int earliest_eta[OW_MAX_PLANETS];
+    int earliest_owner[OW_MAX_PLANETS];
+    int own_prod = 0;
+    int enemy_prod = 0;
 
-    /* Zero the out_obs buffer upfront */
+    for (int i = 0; i < OW_MAX_PLANETS; i++) {
+        earliest_eta[i] = OW_MAX_STEPS + 1;
+        earliest_owner[i] = -1;
+    }
+    ow_planet_slots_by_id(env, slots);
     memset(out_obs, 0, sizeof(float) * OW_OBS_SIZE);
 
-    int idx = 0;
-
-    /* Per-planet features (48 × 7) */
     for (int p = 0; p < OW_MAX_PLANETS; p++) {
         PlanetC* pl = &env->planets[p];
-        if (pl->active) {
-            if (pl->owner == -1) {
-                out_obs[idx] = -1.0f / (float)na;
-            } else if (pl->owner == player_id) {
-                out_obs[idx] = 0.0f;
-            } else {
-                int rel = (pl->owner - player_id + na) % na;
-                out_obs[idx] = (float)rel / (float)(na - 1);
-            }
-            out_obs[idx+1] = (float)pl->x / OW_BOARD_SIZE;
-            out_obs[idx+2] = (float)pl->y / OW_BOARD_SIZE;
-            out_obs[idx+3] = (float)pl->radius / 5.0f;
-            out_obs[idx+4] = (float)pl->ships / 1000.0f;
-            out_obs[idx+5] = (float)pl->production / 5.0f;
-            out_obs[idx+6] = 1.0f;
-        }
-        idx += OW_PLANET_OBS_FEAT;
+        if (!pl->active) continue;
+        if (pl->owner == player_id) own_prod += pl->production;
+        else if (pl->owner >= 0) enemy_prod += pl->production;
     }
 
-    /* Per-fleet features (1024 × 6) */
     for (int f = 0; f < OW_MAX_FLEETS; f++) {
         FleetC* fl = &env->fleets[f];
-        if (fl->active) {
-            if (fl->owner == player_id) {
-                out_obs[idx] = 0.0f;
-            } else {
-                int rel = (fl->owner - player_id + na) % na;
-                out_obs[idx] = (float)rel / (float)(na - 1);
+        if (!fl->active) continue;
+        float vx = (float)(cos(fl->angle) * fl->speed);
+        float vy = (float)(sin(fl->angle) * fl->speed);
+        float best_turns = (float)(OW_MAX_STEPS + 1);
+        int best_pi = -1;
+        for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
+            PlanetC* pl = &env->planets[pi];
+            if (!pl->active || pl->x < 0.0) continue;
+            float rx = (float)(fl->x - pl->x);
+            float ry = (float)(fl->y - pl->y);
+            float acoef = vx * vx + vy * vy;
+            if (acoef < 1e-6f) continue;
+            float bcoef = 2.0f * (rx * vx + ry * vy);
+            float ccoef = rx * rx + ry * ry - (float)(pl->radius * pl->radius);
+            float disc = bcoef * bcoef - 4.0f * acoef * ccoef;
+            if (disc < 0.0f) continue;
+            float sq = sqrtf(disc);
+            float t = (-bcoef - sq) / (2.0f * acoef);
+            if (t < 0.0f) t = (-bcoef + sq) / (2.0f * acoef);
+            if (t >= 0.0f && t < best_turns) {
+                best_turns = t;
+                best_pi = pi;
             }
-            out_obs[idx+1] = (float)fl->x / OW_BOARD_SIZE;
-            out_obs[idx+2] = (float)fl->y / OW_BOARD_SIZE;
-            out_obs[idx+3] = (float)fl->angle / (2.0f * M_PI);
-            out_obs[idx+4] = (float)fl->ships / 1000.0f;
-            out_obs[idx+5] = 1.0f;
         }
-        idx += OW_FLEET_OBS_FEAT;
+        if (best_pi >= 0 && best_turns <= (float)(OW_MAX_STEPS - env->current_step)) {
+            if (fl->owner == player_id) own_pressure[best_pi] += (float)fl->ships;
+            else enemy_pressure[best_pi] += (float)fl->ships;
+            int eta = (int)ceilf(best_turns);
+            if (eta < earliest_eta[best_pi]) {
+                earliest_eta[best_pi] = eta;
+                earliest_owner[best_pi] = fl->owner;
+            }
+        }
     }
 
-    /* Global features (4) */
-    out_obs[idx]   = (float)env->angular_velocity / 0.05f;
-    out_obs[idx+1] = (float)env->current_step / (float)OW_MAX_STEPS;
+    int idx = 0;
+    for (int s = 0; s < OW_MAX_PLANETS; s++) {
+        int pi = slots[s];
+        if (pi >= 0) {
+            PlanetC* pl = &env->planets[pi];
+            float owner_rel = 0.0f;
+            if (pl->owner == player_id) owner_rel = 1.0f;
+            else if (pl->owner >= 0) owner_rel = -1.0f;
+
+            float dx = (float)(pl->x - OW_SUN_X);
+            float dy = (float)(pl->y - OW_SUN_Y);
+            float orbital_r = sqrtf(dx * dx + dy * dy);
+            float theta = atan2f(dy, dx);
+            int eta = earliest_eta[pi];
+            if (eta > OW_MAX_STEPS) eta = OW_MAX_STEPS;
+
+            float projected = (float)pl->ships;
+            if (pl->owner >= 0) projected += (float)(pl->production * eta);
+            float net_own = (pl->owner == player_id ? projected : 0.0f) + own_pressure[pi];
+            float net_enemy = (pl->owner >= 0 && pl->owner != player_id ? projected : 0.0f) + enemy_pressure[pi];
+            float projected_owner = 0.0f;
+            float projected_garrison = projected;
+            if (net_own > net_enemy && (pl->owner == player_id || own_pressure[pi] > 0.0f)) {
+                projected_owner = 1.0f;
+                projected_garrison = net_own - net_enemy;
+            } else if (net_enemy > net_own && ((pl->owner >= 0 && pl->owner != player_id) || enemy_pressure[pi] > 0.0f)) {
+                projected_owner = -1.0f;
+                projected_garrison = net_enemy - net_own;
+            }
+            float need = 0.0f;
+            if (pl->owner == player_id) {
+                need = enemy_pressure[pi] > projected ? enemy_pressure[pi] - projected + 1.0f : 0.0f;
+            } else {
+                need = projected + enemy_pressure[pi] - own_pressure[pi] + 1.0f;
+                if (need < 0.0f) need = 0.0f;
+            }
+
+            out_obs[idx + 0] = 1.0f;
+            out_obs[idx + 1] = pl->is_comet ? 1.0f : 0.0f;
+            out_obs[idx + 2] = owner_rel;
+            out_obs[idx + 3] = ow_clampf((float)pl->production / 5.0f, 0.0f, 1.0f);
+            out_obs[idx + 4] = ow_clampf((float)pl->ships / 100.0f, 0.0f, 1.0f);
+            out_obs[idx + 5] = ow_clampf(orbital_r / OW_ROTATION_RADIUS_LIMIT, 0.0f, 1.0f);
+            out_obs[idx + 6] = sinf(theta);
+            out_obs[idx + 7] = cosf(theta);
+            out_obs[idx + 8] = env->planet_orbits[pi] ? 1.0f : 0.0f;
+            out_obs[idx + 9] = ow_clampf(own_pressure[pi] / 100.0f, 0.0f, 1.0f);
+            out_obs[idx + 10] = ow_clampf(enemy_pressure[pi] / 100.0f, 0.0f, 1.0f);
+            out_obs[idx + 11] = projected_owner;
+            out_obs[idx + 12] = ow_clampf(projected_garrison / 100.0f, 0.0f, 1.0f);
+            out_obs[idx + 13] = ow_clampf((float)eta / (float)OW_MAX_STEPS, 0.0f, 1.0f);
+            out_obs[idx + 14] = ow_clampf(need / 100.0f, 0.0f, 1.0f);
+            out_obs[idx + 15] = ow_clampf(dx / OW_SUN_X, -1.0f, 1.0f);
+            out_obs[idx + 16] = ow_clampf(dy / OW_SUN_Y, -1.0f, 1.0f);
+            out_obs[idx + 17] = earliest_owner[pi] == player_id ? 1.0f : (earliest_owner[pi] >= 0 ? -1.0f : 0.0f);
+        }
+        idx += OW_TRAIN_PLANET_OBS_FEAT;
+    }
 
     int my_ships = total_ships[player_id];
     int enemy_ships = sum_all_ships - my_ships;
-
-    out_obs[idx+2] = (float)my_ships / 1000.0f;
-    out_obs[idx+3] = (float)enemy_ships / 1000.0f;
+    out_obs[idx + 0] = ow_clampf((float)env->angular_velocity / 0.05f, 0.0f, 1.0f);
+    out_obs[idx + 1] = ow_clampf((float)env->current_step / (float)OW_MAX_STEPS, 0.0f, 1.0f);
+    out_obs[idx + 2] = ow_clampf((float)(OW_MAX_STEPS - env->current_step) / (float)OW_MAX_STEPS, 0.0f, 1.0f);
+    out_obs[idx + 3] = ow_clampf((float)my_ships / 1000.0f, 0.0f, 1.0f);
+    out_obs[idx + 4] = ow_clampf((float)enemy_ships / 1000.0f, 0.0f, 1.0f);
+    out_obs[idx + 5] = ow_clampf((float)own_prod / 50.0f, 0.0f, 1.0f);
+    out_obs[idx + 6] = ow_clampf((float)enemy_prod / 50.0f, 0.0f, 1.0f);
+    out_obs[idx + 7] = (na == 2) ? 1.0f : 0.0f;
 }
 #endif
 
@@ -1216,18 +1344,16 @@ static void ow_handle_game_over(OrbitWars* env) {
         }
         if (player_id < 0) player_id = slot;
 
-        float reward;
-        if (max_ships == 0) {
-            reward = 0.5f; /* draw */
-        } else if (total_ships[player_id] == max_ships) {
+        float reward = -1.0f;
+        if (max_ships > 0 && total_ships[player_id] == max_ships) {
             /* Check for tie */
             int num_winners = 0;
             for (int p = 0; p < env->num_agents; p++) {
                 if (total_ships[p] == max_ships) num_winners++;
             }
-            reward = (num_winners > 1) ? 0.5f : 1.0f;
-        } else {
-            reward = 0.0f;
+            if (num_winners == 1) {
+                reward = 1.0f;
+            }
         }
 
         *env->reward_ptr[slot] = reward;
@@ -1241,17 +1367,32 @@ static void ow_handle_game_over(OrbitWars* env) {
     }
     if (slot0_player < 0) slot0_player = 0;
 
-    float slot0_score = (max_ships > 0 && total_ships[slot0_player] == max_ships) ? 1.0f : 0.0f;
-    env->log.perf = slot0_score;
+    float primary_reward = *env->reward_ptr[0];
+    float slot0_won = (primary_reward == 1.0f) ? 1.0f : 0.0f;
+    env->log.perf = slot0_won;
     env->log.score = (float)total_ships[slot0_player];
-    env->log.episode_return += slot0_score;
+    env->log.episode_return += primary_reward;
     env->log.episode_length = (float)env->current_step;
     env->log.n++;
 
     /* Historical self-play logging */
     if (env->tag > 0 && env->tag <= OW_MAX_BANKS) {
         int bank_idx = env->tag - 1;
-        float primary_score = *env->reward_ptr[0];
+        float primary_score = 0.0f;
+        if (primary_reward == 1.0f) {
+            primary_score = 1.0f; // Win
+        } else {
+            // Draw vs Loss check
+            int num_winners = 0;
+            for (int p = 0; p < env->num_agents; p++) {
+                if (total_ships[p] == max_ships) num_winners++;
+            }
+            if (max_ships == 0 || num_winners > 1) {
+                primary_score = 0.5f; // Draw
+            } else {
+                primary_score = 0.0f; // Loss
+            }
+        }
         env->log.hist_score_bank[bank_idx] += primary_score;
         env->log.hist_n_bank[bank_idx] += 1.0f;
         env->log.hist_score += primary_score;
@@ -1308,13 +1449,215 @@ void c_step_core(OrbitWars* env) {
     ow_compute_observations(env);
 }
 
+static float ow_aim_angle_to_planet(OrbitWars* env, int src_idx, int tgt_idx, int ships) {
+    PlanetC* src = &env->planets[src_idx];
+    PlanetC* tgt = &env->planets[tgt_idx];
+    double sx = src->x;
+    double sy = src->y;
+    double tx = tgt->x;
+    double ty = tgt->y;
+    double speed = ow_fleet_speed(ships);
+
+    if (env->planet_orbits[tgt_idx] && !tgt->is_comet) {
+        double angle = atan2(ty - sy, tx - sx);
+        for (int iter = 0; iter < 8; iter++) {
+            double dist = hypot(tx - sx, ty - sy);
+            double eta = dist / speed;
+            double future_angle = env->planet_angle[tgt_idx] + env->angular_velocity * eta;
+            tx = OW_SUN_X + env->planet_orbital_radius[tgt_idx] * cos(future_angle);
+            ty = OW_SUN_Y + env->planet_orbital_radius[tgt_idx] * sin(future_angle);
+            angle = atan2(ty - sy, tx - sx);
+        }
+        return ow_norm_angle((float)angle);
+    }
+
+    if (tgt->is_comet) {
+        for (int gi = 0; gi < env->num_comet_groups; gi++) {
+            CometGroupC* cg = &env->comet_groups[gi];
+            if (!cg->active) continue;
+            for (int m = 0; m < 4; m++) {
+                if (cg->planet_ids[m] != tgt->id) continue;
+                int best_idx = cg->path_index;
+                if (best_idx < 0) best_idx = 0;
+                double best_err = 1e30;
+                int remaining = cg->num_steps - best_idx;
+                if (remaining > 40) remaining = 40;
+                for (int k = 0; k < remaining; k++) {
+                    int path_idx = best_idx + k;
+                    double px = cg->paths_x[m][path_idx];
+                    double py = cg->paths_y[m][path_idx];
+                    double eta = hypot(px - sx, py - sy) / speed;
+                    double err = fabs(eta - (double)k);
+                    if (err < best_err) {
+                        best_err = err;
+                        tx = px;
+                        ty = py;
+                    }
+                }
+                return ow_norm_angle((float)atan2(ty - sy, tx - sx));
+            }
+        }
+    }
+
+    return ow_norm_angle((float)atan2(ty - sy, tx - sx));
+}
+
+typedef struct {
+    int slot;
+    int planet_idx;
+    float x;
+    float r;
+    float strength;
+} OWIntervalNode;
+
+static int ow_decode_interval_actions_for_slot(OrbitWars* env, int slot, const float* act) {
+    int player_id = ow_player_for_slot(env, slot);
+    int slots[OW_MAX_PLANETS];
+    int budgets[OW_MAX_PLANETS] = {0};
+    OWIntervalNode sources[OW_MAX_PLANETS];
+    OWIntervalNode sinks[OW_MAX_PLANETS];
+    int num_sources = 0;
+    int num_sinks = 0;
+    int launches = 0;
+
+    ow_planet_slots_by_id(env, slots);
+
+    for (int s = 0; s < OW_MAX_PLANETS; s++) {
+        int pi = slots[s];
+        if (pi < 0) continue;
+        PlanetC* pl = &env->planets[pi];
+        float x = ow_clampf(act[2 * s + 0], -1.0f, 1.0f);
+        float r = ow_clampf(act[2 * s + 1], -1.0f, 1.0f);
+        if (r > OW_INTERVAL_EPS && pl->owner == player_id && pl->ships > 1) {
+            budgets[pi] = pl->ships - 1;
+            sources[num_sources++] = (OWIntervalNode){s, pi, x, r, 0.0f};
+        } else if (r < -OW_INTERVAL_EPS) {
+            sinks[num_sinks++] = (OWIntervalNode){s, pi, x, r, 0.0f};
+        }
+    }
+
+    for (int ti = 0; ti < num_sinks; ti++) {
+        float total = 0.0f;
+        for (int si = 0; si < num_sources; si++) {
+            if (sources[si].planet_idx == sinks[ti].planet_idx) continue;
+            total += ow_interval_pair_strength(sources[si].x, sources[si].r, sinks[ti].x, sinks[ti].r);
+        }
+        sinks[ti].strength = total;
+    }
+
+    for (int pass = 0; pass < OW_MAX_TARGETS && launches < OW_MAX_ACTIONS_PER_PLAYER; pass++) {
+        int best_ti = -1;
+        for (int ti = 0; ti < num_sinks; ti++) {
+            if (sinks[ti].strength <= 0.0f) continue;
+            if (best_ti < 0 || sinks[ti].strength > sinks[best_ti].strength) best_ti = ti;
+        }
+        if (best_ti < 0) break;
+
+        PlanetC* tgt = &env->planets[sinks[best_ti].planet_idx];
+        int selected[OW_MAX_SOURCES_PER_TARGET];
+        float selected_strength[OW_MAX_SOURCES_PER_TARGET];
+        int selected_n = 0;
+        float selected_total = 0.0f;
+        for (int k = 0; k < OW_MAX_SOURCES_PER_TARGET; k++) {
+            selected[k] = -1;
+            selected_strength[k] = 0.0f;
+        }
+
+        for (int si = 0; si < num_sources; si++) {
+            int src_idx = sources[si].planet_idx;
+            if (src_idx == sinks[best_ti].planet_idx || budgets[src_idx] <= 0) continue;
+            float strength = ow_interval_pair_strength(sources[si].x, sources[si].r, sinks[best_ti].x, sinks[best_ti].r);
+            if (strength <= 0.0f) continue;
+            for (int pos = 0; pos < OW_MAX_SOURCES_PER_TARGET; pos++) {
+                if (selected[pos] < 0 || strength > selected_strength[pos]) {
+                    for (int move = OW_MAX_SOURCES_PER_TARGET - 1; move > pos; move--) {
+                        selected[move] = selected[move - 1];
+                        selected_strength[move] = selected_strength[move - 1];
+                    }
+                    selected[pos] = si;
+                    selected_strength[pos] = strength;
+                    break;
+                }
+            }
+        }
+
+        for (int k = 0; k < OW_MAX_SOURCES_PER_TARGET; k++) {
+            if (selected[k] >= 0) {
+                selected_n++;
+                selected_total += selected_strength[k];
+            }
+        }
+
+        if (selected_n > 0 && selected_total > 0.0f) {
+            int target_need;
+            if (tgt->owner == player_id) {
+                target_need = tgt->production * 4 + 1;
+                if (target_need < 2) target_need = 2;
+            } else {
+                target_need = tgt->ships + 1;
+                if (tgt->owner >= 0) target_need += tgt->production * 3;
+            }
+
+            int planned[OW_MAX_SOURCES_PER_TARGET] = {0};
+            int planned_total = 0;
+            for (int k = 0; k < OW_MAX_SOURCES_PER_TARGET && launches < OW_MAX_ACTIONS_PER_PLAYER; k++) {
+                int si = selected[k];
+                if (si < 0) continue;
+                int src_idx = sources[si].planet_idx;
+                int share = (int)ceilf((float)target_need * (selected_strength[k] / selected_total));
+                if (share > budgets[src_idx]) share = budgets[src_idx];
+                if (share < 0) share = 0;
+                planned[k] = share;
+                planned_total += share;
+            }
+
+            int remaining = target_need - planned_total;
+            while (remaining > 0) {
+                int best_k = -1;
+                for (int k = 0; k < OW_MAX_SOURCES_PER_TARGET; k++) {
+                    int si = selected[k];
+                    if (si < 0) continue;
+                    int src_idx = sources[si].planet_idx;
+                    if (planned[k] >= budgets[src_idx]) continue;
+                    if (best_k < 0 || selected_strength[k] > selected_strength[best_k]) best_k = k;
+                }
+                if (best_k < 0) break;
+                int src_idx = sources[selected[best_k]].planet_idx;
+                int add = budgets[src_idx] - planned[best_k];
+                if (add > remaining) add = remaining;
+                planned[best_k] += add;
+                remaining -= add;
+            }
+
+            for (int k = 0; k < OW_MAX_SOURCES_PER_TARGET && launches < OW_MAX_ACTIONS_PER_PLAYER; k++) {
+                int si = selected[k];
+                if (si < 0) continue;
+                int src_idx = sources[si].planet_idx;
+                int share = planned[k];
+                if (share <= 0) continue;
+
+                int ai = env->num_raw_actions[player_id];
+                if (ai >= OW_MAX_ACTIONS_PER_PLAYER) break;
+                float angle = ow_aim_angle_to_planet(env, src_idx, sinks[best_ti].planet_idx, share);
+                env->raw_actions[player_id][ai] = (RawActionC){
+                    .from_planet_id = env->planets[src_idx].id,
+                    .angle = angle,
+                    .ships = share
+                };
+                env->num_raw_actions[player_id]++;
+                budgets[src_idx] -= share;
+                launches++;
+            }
+        }
+
+        sinks[best_ti].strength = -1.0f;
+    }
+
+    return launches;
+}
+
 /* ========================================================================
- * c_step — decode discrete actions, then call c_step_core
- *
- * Action space: 3 multi-discrete values per agent
- *   action[0]: planet_idx (0..47)
- *   action[1]: angle_bucket (0..63) → angle = bucket * 2π/64
- *   action[2]: ship_bucket (0..15)  → 0 = noop, 1-15 = fraction of ships
+ * c_step — decode continuous interval actions, then call c_step_core
  * ======================================================================== */
 
 void c_step(OrbitWars* env) {
@@ -1323,45 +1666,8 @@ void c_step(OrbitWars* env) {
         env->num_raw_actions[p] = 0;
     }
 
-    /* Decode discrete actions from each agent slot */
     for (int slot = 0; slot < env->num_agents; slot++) {
-        float* act = env->action_ptr[slot];
-
-        /* Map slot to player ID */
-        int player_id = -1;
-        for (int p = 0; p < env->num_agents; p++) {
-            if (env->slot_for_color[p] == slot) { player_id = p; break; }
-        }
-        if (player_id < 0) player_id = slot;
-
-        for (int a_idx = 0; a_idx < OW_MAX_ACTIONS_PER_PLAYER; a_idx++) {
-            int base = a_idx * 3;
-            int planet_idx   = (int)act[base + 0];
-            int angle_bucket = (int)act[base + 1];
-            int ship_bucket  = (int)act[base + 2];
-
-            /* Validate and decode */
-            if (ship_bucket <= 0) continue;  /* noop */
-            if (planet_idx < 0 || planet_idx >= OW_MAX_PLANETS) continue;
-            PlanetC* pl = &env->planets[planet_idx];
-            if (!pl->active || pl->owner != player_id) continue;
-            if (pl->ships <= 0) continue;
-
-            float angle = (float)angle_bucket * (2.0f * M_PI) / (float)OW_NUM_ANGLE_BUCKETS;
-            int ships_to_send = (ship_bucket * pl->ships + 14) / 15; /* ceil(bucket * ships / 15) */
-            if (ships_to_send > pl->ships) ships_to_send = pl->ships;
-            if (ships_to_send <= 0) continue;
-
-            int ai = env->num_raw_actions[player_id];
-            if (ai >= OW_MAX_ACTIONS_PER_PLAYER) continue;
-
-            env->raw_actions[player_id][ai] = (RawActionC){
-                .from_planet_id = pl->id,
-                .angle = angle,
-                .ships = ships_to_send
-            };
-            env->num_raw_actions[player_id]++;
-        }
+        ow_decode_interval_actions_for_slot(env, slot, env->action_ptr[slot]);
     }
 
     /* Run physics */

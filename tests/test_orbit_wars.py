@@ -86,12 +86,15 @@ def test_load_and_step():
         rewards = float_view(vec.rewards_ptr, total_agents)
         terminals = float_view(vec.terminals_ptr, total_agents)
         
-        act_sizes = list(vec.act_sizes)  # e.g. [48, 64, 16]
+        act_sizes = list(vec.act_sizes)
         actions_buf = np.zeros((total_agents, vec.num_atns), dtype=np.float32)
 
         for _ in range(1000):
-            for d, sz in enumerate(act_sizes):
-                actions_buf[:, d] = np.random.randint(0, sz, size=total_agents).astype(np.float32)
+            if all(sz == 1 for sz in act_sizes):
+                actions_buf[:] = np.random.uniform(-1.0, 1.0, size=actions_buf.shape).astype(np.float32)
+            else:
+                for d, sz in enumerate(act_sizes):
+                    actions_buf[:, d] = np.random.randint(0, sz, size=total_agents).astype(np.float32)
             vec.cpu_step(actions_buf.ctypes.data)
         print(f"  {PASS}: 1000 steps completed without crash")
     except Exception as e:
@@ -119,8 +122,11 @@ def test_load_and_step():
     vec.reset()
     terminal_seen = False
     for step in range(600):
-        for d, sz in enumerate(act_sizes):
-            actions_buf[:, d] = np.random.randint(0, sz, size=total_agents).astype(np.float32)
+        if all(sz == 1 for sz in act_sizes):
+            actions_buf[:] = np.random.uniform(-1.0, 1.0, size=actions_buf.shape).astype(np.float32)
+        else:
+            for d, sz in enumerate(act_sizes):
+                actions_buf[:, d] = np.random.randint(0, sz, size=total_agents).astype(np.float32)
         vec.cpu_step(actions_buf.ctypes.data)
 
         if np.any(terminals > 0.5):
@@ -142,8 +148,11 @@ def test_load_and_step():
 
     start_time = time.perf_counter()
     for _ in range(num_bench_steps):
-        for d, sz in enumerate(act_sizes):
-            actions_buf[:, d] = np.random.randint(0, sz, size=total_agents).astype(np.float32)
+        if all(sz == 1 for sz in act_sizes):
+            actions_buf[:] = np.random.uniform(-1.0, 1.0, size=actions_buf.shape).astype(np.float32)
+        else:
+            for d, sz in enumerate(act_sizes):
+                actions_buf[:, d] = np.random.randint(0, sz, size=total_agents).astype(np.float32)
         vec.cpu_step(actions_buf.ctypes.data)
     elapsed = time.perf_counter() - start_time
 

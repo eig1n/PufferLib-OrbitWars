@@ -40,7 +40,7 @@ for path in [".env", "../.env", "../../.env", "env_file", "../env_file", "../../
         if wandb_key:
             break
 
-cmd = [sys.executable, "-m", "pufferlib.pufferl", "train", "orbit_wars", "--slowly"]
+cmd = [sys.executable, "-m", "pufferlib.pufferl", "train", "orbit_wars", "--slowly", "--vec.total-agents", "64"]
 if wandb_key:
     os.environ["WANDB_API_KEY"] = wandb_key
     try:
@@ -53,7 +53,7 @@ if wandb_key:
     print("Enabled Weights & Biases logging (--wandb) using key from .env")
 
 # Run PufferLib Training
-print("\n>>> Starting PufferLib training loop for 10 seconds... <<<")
+print("\n>>> Starting PufferLib training loop for up to 60 seconds... <<<")
 sys.stdout.flush()
 
 # Open the log file for writing (in the parent directory)
@@ -66,18 +66,22 @@ process = subprocess.Popen(
     bufsize=1
 )
 
-# Monitor the training process for 10 seconds
+# Monitor the training process for up to 60 seconds
 start_time = time.time()
 success = True
 
 # Make stdout non-blocking to read dynamically without hanging
 os.set_blocking(process.stdout.fileno(), False)
 
-while time.time() - start_time < 10.0:
+while time.time() - start_time < 60.0:
     ret = process.poll()
     if ret is not None:
-        print(f"\n❌ Training process terminated early with exit code {ret}!")
-        success = False
+        if ret == 0:
+            print(f"\n✅ Training process completed naturally with exit code 0.")
+            success = True
+        else:
+            print(f"\n❌ Training process terminated early with exit code {ret}!")
+            success = False
         break
 
     try:
@@ -94,10 +98,10 @@ while time.time() - start_time < 10.0:
 
 # If still running, terminate it successfully (this is a pass)
 if process.poll() is None:
-    print("\nTraining ran successfully for 10 seconds. Terminating process...")
+    print("\nTraining process is still running after 60 seconds. Terminating process...")
     process.terminate()
     try:
-        process.wait(timeout=2)
+        process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         process.kill()
 

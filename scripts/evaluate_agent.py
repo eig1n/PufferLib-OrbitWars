@@ -11,8 +11,8 @@ if repo_root not in sys.path:
     sys.path.insert(0, os.path.join(repo_root, "orbit-wars"))
 
 def run(agent_a, agent_b, seeds=range(20)):
-    name_a = "puffer_agent"
-    name_b = "baseline_sniper"
+    name_a = os.path.basename(agent_a).replace(".py", "")
+    name_b = agent_b if agent_b == "random" else os.path.basename(agent_b).replace(".py", "")
 
     wins = {name_a: 0, name_b: 0}
     ties = 0
@@ -22,11 +22,11 @@ def run(agent_a, agent_b, seeds=range(20)):
     replay_dir = os.path.join(log_dir, "replays")
     os.makedirs(replay_dir, exist_ok=True)
 
-    log_file_path = os.path.join(log_dir, "evaluation_run.log")
+    log_file_path = os.path.join(log_dir, f"evaluation_{name_a}_vs_{name_b}.log")
     
     # Fully qualified agent paths for kaggle-environments
-    agent_a_path = os.path.join(repo_root, agent_a)
-    agent_b_path = os.path.join(repo_root, agent_b)
+    agent_a_path = agent_a if agent_a == "random" else os.path.join(repo_root, agent_a)
+    agent_b_path = agent_b if agent_b == "random" else os.path.join(repo_root, agent_b)
 
     print(f"Starting evaluation match: {name_a} vs {name_b}")
     print(f"Log path: {log_file_path}")

@@ -26,10 +26,17 @@ Read `ORBIT_WARS_HANDOFF.md` first if you need broad context. `orbit_wars_lite` 
    - Builds the CPU lite extension.
 2. `.venv/bin/python tests/test_orbit_wars_lite.py`
    - Tests dimensions, amount mapping, one-fleet-per-source behavior, runtime stepping, obs range, and local SPS.
-3. `PYTHONUNBUFFERED=1 .venv/bin/python tests/test_orbit_wars_parity.py`
+3. `.venv/bin/python tests/test_adapter_parity.py`
+   - Tests Python Kaggle adapter observation/action parity against the C lite helper.
+4. `PYTHONUNBUFFERED=1 .venv/bin/python tests/test_orbit_wars_parity.py`
    - Run after touching shared/copied physics logic. The original `orbit_wars` parity target must stay correct.
 
 If build fails with `ccache: Read-only file system`, rerun with escalation/approval.
+
+Latest known local verification:
+- `tests/test_adapter_parity.py`: passed with 0 observation mismatches and action decode parity.
+- `tests/test_orbit_wars_parity.py`: passed after the lite optimization pass.
+- `tests/test_orbit_wars_lite.py`: passed; optimized local random-action SPS was about `28.5k` on the test CPU, up from about `26.1k`.
 
 ## Colab GPU Smoke Train
 
@@ -57,50 +64,71 @@ Record:
 
 ## Kaggle Local Evaluation
 
-Do not evaluate a lite checkpoint in Kaggle until the Python adapter is updated.
+The lite Python adapter exists and has C parity coverage:
+- `orbit-wars/puffer_agent/main.py` loads the checkpoint on CPU, including Kaggle `exec()` path fallback.
+- `orbit-wars/puffer_agent/policy_adapter.py` maps Kaggle obs to `848` floats and decodes `30` actions into moves.
+- `tests/test_adapter_parity.py` compares C lite helper obs/actions against the Python adapter.
 
-Required adapter work:
-1. Update `orbit-wars/puffer_agent/policy_adapter.py` for the lite `848` observation and `30` action contract.
-2. Convert Kaggle observations into the same planet/grid/top-fleet layout.
-3. Decode the 6 proposals into Kaggle moves with the same nearest-source/nearest-target/ray-validation semantics.
-4. Add a tiny local test comparing C lite helper outputs with Python adapter outputs on hand-built states.
+Current smoke checkpoint:
+- `checkpoints/orbit_wars_lite/colab_t4_smoke/0000000006291456.bin`
+- Trained for only about `4.2M` steps on Colab T4. Treat it as a pipeline checkpoint, not a strong policy.
 
-Baseline check once adapter exists:
+Baseline check:
 
 ```bash
-.venv/bin/python - <<'PY'
-from kaggle_environments import make
-
-def run(agent_a, agent_b, seeds=range(20)):
-    wins = [0, 0]
-    ties = 0
-    for seed in seeds:
-        env = make("orbit_wars", configuration={"seed": seed}, debug=True)
-        env.run([agent_a, agent_b])
-        rewards = [s.reward for s in env.steps[-1]]
-        if rewards[0] > rewards[1]:
-            wins[0] += 1
-        elif rewards[1] > rewards[0]:
-            wins[1] += 1
-        else:
-            ties += 1
-        print(seed, rewards, [s.status for s in env.steps[-1]])
-    print({"agent0_wins": wins[0], "agent1_wins": wins[1], "ties": ties})
-
-run("orbit-wars/puffer_agent/main.py", "orbit-wars/main.py")
-PY
+.venv/bin/python scripts/evaluate_agent.py
 ```
 
 `orbit-wars/main.py` is the nearest-planet sniper baseline.
+
+Latest known 20-game CPU Kaggle run against nearest sniper:
+- `puffer_agent`: 2 wins
+- `baseline_sniper`: 18 wins
+- crashes/warnings: none
+
+Interpretation: deployment path works, but the checkpoint is too short/small to judge final learnability. Train longer before making strategy conclusions.
+
+## Performance Status
+
+Current lite speed work is useful and should be kept:
+- Env-scoped `EnvCache` on `env->client`.
+- Cached future planet positions for aim validation.
+- Active-fleet list and precomputed fleet `cos/sin` in observation building.
+- Precomputed per-player production totals.
+- Cached fleet velocity in movement.
+- `_POSIX_C_SOURCE` added for clean `rand_r` declaration.
+
+Why this is good:
+- It keeps the public lite contract unchanged: `848` obs, `30` actions.
+- It optimizes duplicated math and inactive-fleet loops instead of approximating physics.
+- It preserves raw `orbit_wars` parity and adapter parity.
+
+Limit:
+- The measured gain was about `9.3%` in local random-action tests. That is real but not enough by itself for the target around `700k` CPU SPS on a rented 5090 host.
+
+Next speed checks:
+1. Benchmark on the actual target CPU before rewriting more code.
+2. Record SPS for noop actions, dense random actions, and trained-policy actions; dense random is the harshest case.
+3. Log active fleets, launches/step, rejected proposals, and episode length so slowdowns can be tied to game state.
+4. If trained-policy SPS collapses with many fleets, profile movement/collision and fleet allocation first.
 
 ## Next Optimization Pass
 
 Highest leverage:
 - Add metrics to lite `my_log`: launches/step, noop proposal rate, rejected validation rate, fleets active.
-- Profile dense-random actions on target CPU. Local laptop numbers after the latest pass were about `26k` random-action agent-SPS and `100k-146k` noop agent-SPS.
+- Profile dense-random actions on target CPU. Latest optimized local random-action number was about `28.5k` agent-SPS.
 - If random-action decode is still too slow, keep 6 proposal outputs but validate only the top-K positive `send_amount` proposals during early training. Document any cap in this file and config.
+- Consider fleet-pressure observation only if it can be implemented from already-computed fleet/grid passes. Do not add expensive all-fleet/all-planet projection unless profiling proves there is budget.
+- Keep the 10x10 fleet grid and 8 top-fleet view for now. They are the intended low-cost substitute for massive fleet observations.
 
 Guardrails:
 - Keep `orbit_wars_lite` action count `30` and observation size `848` unless explicitly changing the training contract.
 - Keep original `orbit_wars` parity tests passing.
-- Do not use the old interval `policy_adapter.py` for lite checkpoints.
+- Keep `tests/test_adapter_parity.py` passing after any adapter or lite decoder change.
+
+## Next Training Step
+
+Run a longer GPU job with the same checked-in config unless deliberately changing model size:
+1. Increase `train.total_timesteps` enough to judge learning, not just pipeline health.
+2. Save checkpoint, SPS, score, episode return, win rate against nearest sniper.
+3. Re-run the 20-game Kaggle local eval. If the policy still loses badly after a meaningful run, inspect action statistics before changing architecture.

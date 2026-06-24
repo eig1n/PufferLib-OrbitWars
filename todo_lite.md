@@ -40,21 +40,32 @@ Latest known local verification:
 - `tests/test_orbit_wars_parity.py`: passed after the lite direct-decoder rewrite.
 - `tests/test_orbit_wars_lite.py`: passed; local random-action SPS in that test was about `47k` after the direct-decoder rewrite.
 
-## Colab GPU Smoke Train
+## Colab GPU Smoke Train & Setup
 
 Run from local machine:
 
 ```bash
+# 1. Start Colab session
 colab new --gpu T4
-colab exec -f scripts/orbit_wars_lite_colab_gpu.py
+
+# 2. Run simplified environment setup (do this once per session)
+colab exec --timeout 300 -f scripts/colab_setup.py
+
+# 3. Execute training script (runs instantly, uses cached setup)
+colab exec --timeout 900 -f scripts/orbit_wars_lite_colab_gpu.py
 ```
 
-The script clones/pulls `eig1n/PufferLib-OrbitWars`, builds `orbit_wars_lite` with CUDA, runs `tests/test_orbit_wars_lite.py`, runs a short GPU train, and prints `NEWEST_CHECKPOINT=...`.
+The setup script installs only the minimal system libraries (`clang`, `libomp-dev`, `ccache`), python dependencies (`pybind11`, `numpy`, `rich`, `kaggle-environments`, `wandb`), and editable pufferlib clone.
+The training script pulls latest changes, builds the CUDA backend, runs `tests/test_orbit_wars_lite.py`, trains for 10 minutes, and writes its own log file on the VM.
 
-Download the checkpoint:
+Download the checkpoint and the log:
 
 ```bash
-colab download pufferlib/checkpoints/orbit_wars_lite/<run_id>/<step>.bin
+# Download the checkpoint
+colab download -s <session_id> /content/pufferlib/checkpoints/orbit_wars_lite/<run_id>/pool/<step>.bin checkpoints/orbit_wars_lite/colab_t4_selfplay_128_5/checkpoint.bin
+
+# Download the training console log
+colab download -s <session_id> /content/pufferlib/logs/orbit_wars_lite_colab_gpu.log logs/orbit_wars_lite_colab_gpu.log
 ```
 
 Record:
@@ -72,24 +83,30 @@ The lite Python adapter exists and has C parity coverage:
 - `tests/test_adapter_parity.py` compares C lite helper obs/actions against the Python adapter.
 - `scripts/evaluate_agent.py` is the canonical local strength check against `orbit-wars/main.py`.
 
-Current smoke checkpoint:
-- `checkpoints/orbit_wars_lite/colab_t4_smoke/0000000006291456.bin`
-- Trained for only about `4.2M` steps on Colab T4. Treat it as a pipeline checkpoint, not a strong policy.
+Current selfplay checkpoint:
+- `checkpoints/orbit_wars_lite/colab_t4_selfplay_128_5/checkpoint.bin`
+- Configured with `hidden_size = 128`, `num_layers = 5`, and selfplay enabled.
+- Trained for about 10 minutes (~30M steps) on Colab T4.
 
-Baseline check:
+Baseline checks:
 
 ```bash
+# Against nearest planet sniper
 .venv/bin/python scripts/evaluate_agent.py
+
+# Against built-in random agent
+.venv/bin/python scripts/evaluate_against_random.py
 ```
 
-`orbit-wars/main.py` is the nearest-planet sniper baseline.
+Latest known 20-game CPU Kaggle runs:
+- Against `baseline_sniper`:
+  - `puffer_agent`: 4 wins
+  - `baseline_sniper`: 16 wins
+- Against `random`:
+  - `puffer_agent`: 4 wins
+  - `random`: 16 wins
 
-Latest known 20-game CPU Kaggle run against nearest sniper:
-- `puffer_agent`: 2 wins
-- `baseline_sniper`: 18 wins
-- crashes/warnings: none
-
-Interpretation: deployment path works, but the checkpoint is too short/small to judge final learnability. Train longer before making strategy conclusions.
+Interpretation: The model learns and scales (win rate against sniper baseline doubled from 2 to 4). However, the policy is still in the early stages of learning, performing poorly against random entropy. Train much longer (e.g. overnight) or tune hyper-parameters before making final strategy conclusions.
 
 ## Performance Status
 

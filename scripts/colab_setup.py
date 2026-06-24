@@ -37,7 +37,7 @@ run(f"apt-get install -y -qq {' '.join(packages)}")
 
 # 2. Symlink python -> python3 if missing
 print("\n--- [2/4] Setting up python symlink ---")
-symlink_cmd = 'if ! command -v python &>/dev/null; then ln -s "$(which python3)" /usr/local/bin/python; fi'
+symlink_cmd = 'command -v python >/dev/null 2>&1 || ln -s "$(which python3)" /usr/local/bin/python'
 run(symlink_cmd)
 
 # 3. Install Python dependencies using uv

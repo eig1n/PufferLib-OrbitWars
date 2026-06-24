@@ -374,6 +374,12 @@ static int ow_swept_pair_hit(float ax, float ay, float bx, float by,
     return (t2 >= 0.0 && t1 <= 1.0);
 }
 
+static inline int ow_aabb_overlap(double amin_x, double amin_y, double amax_x, double amax_y,
+                                  double bmin_x, double bmin_y, double bmax_x, double bmax_y) {
+    return amin_x <= bmax_x && amax_x >= bmin_x &&
+           amin_y <= bmax_y && amax_y >= bmin_y;
+}
+
 /* ========================================================================
  * Fleet speed
  * ======================================================================== */
@@ -1165,10 +1171,27 @@ static void ow_phase_production(OrbitWars* env) {
  * ======================================================================== */
 
 static void ow_phase_fleet_movement(OrbitWars* env) {
+    if (env->next_fleet_id == 0) return;
+
     double next_px[OW_MAX_PLANETS];
     double next_py[OW_MAX_PLANETS];
+    double planet_min_x[OW_MAX_PLANETS];
+    double planet_min_y[OW_MAX_PLANETS];
+    double planet_max_x[OW_MAX_PLANETS];
+    double planet_max_y[OW_MAX_PLANETS];
+    int active_planets[OW_MAX_PLANETS];
+    int num_active_planets = 0;
+    int active_fleets[OW_MAX_FLEETS];
+    int num_active_fleets = 0;
 
-    /* Precompute projected next positions for all active planets */
+    for (int fi = 0; fi < OW_MAX_FLEETS; fi++) {
+        if (env->fleets[fi].active) {
+            active_fleets[num_active_fleets++] = fi;
+        }
+    }
+    if (num_active_fleets == 0) return;
+
+    /* Precompute projected next positions and broadphase boxes for collidable planets. */
     for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
         PlanetC* pl = &env->planets[pi];
         next_px[pi] = pl->x;
@@ -1199,13 +1222,24 @@ static void ow_phase_fleet_movement(OrbitWars* env) {
                 if (found) break;
             }
         }
+
+        double min_x = pl->x < next_px[pi] ? pl->x : next_px[pi];
+        double min_y = pl->y < next_py[pi] ? pl->y : next_py[pi];
+        double max_x = pl->x > next_px[pi] ? pl->x : next_px[pi];
+        double max_y = pl->y > next_py[pi] ? pl->y : next_py[pi];
+        double r = pl->radius;
+        planet_min_x[pi] = min_x - r;
+        planet_min_y[pi] = min_y - r;
+        planet_max_x[pi] = max_x + r;
+        planet_max_y[pi] = max_y + r;
+        active_planets[num_active_planets++] = pi;
     }
 
     EnvCache* cache = ow_get_cache(env);
 
-    for (int fi = 0; fi < OW_MAX_FLEETS; fi++) {
+    for (int afi = 0; afi < num_active_fleets; afi++) {
+        int fi = active_fleets[afi];
         FleetC* fl = &env->fleets[fi];
-        if (!fl->active) continue;
 
         double old_x = fl->x, old_y = fl->y;
         double dx, dy;
@@ -1221,15 +1255,21 @@ static void ow_phase_fleet_movement(OrbitWars* env) {
         }
         double new_x = old_x + dx;
         double new_y = old_y + dy;
+        double fleet_min_x = old_x < new_x ? old_x : new_x;
+        double fleet_min_y = old_y < new_y ? old_y : new_y;
+        double fleet_max_x = old_x > new_x ? old_x : new_x;
+        double fleet_max_y = old_y > new_y ? old_y : new_y;
 
         /* Check planet collisions first using swept-pair continuous check */
         int hit_planet = 0;
-        for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
+        for (int api = 0; api < num_active_planets; api++) {
+            int pi = active_planets[api];
             PlanetC* pl = &env->planets[pi];
-            if (!pl->active) continue;
-
-            /* Check if first-placement comet (starts off-board, do not hit) */
-            if (pl->x < 0.0f) continue;
+            if (!ow_aabb_overlap(fleet_min_x, fleet_min_y, fleet_max_x, fleet_max_y,
+                                 planet_min_x[pi], planet_min_y[pi],
+                                 planet_max_x[pi], planet_max_y[pi])) {
+                continue;
+            }
 
             if (ow_swept_pair_hit(old_x, old_y, new_x, new_y,
                                   pl->x, pl->y, next_px[pi], next_py[pi],

@@ -99,6 +99,7 @@ Current lite speed work is useful and should be kept:
 - Active-fleet list and precomputed fleet `cos/sin` in observation building.
 - Precomputed per-player production totals.
 - Cached fleet velocity in movement.
+- Fleet movement now has a no-fleet fast path, active-fleet/active-planet local lists, and conservative swept-AABB rejection before exact planet collision checks.
 - `_POSIX_C_SOURCE` added for clean `rand_r` declaration.
 
 Why this is good:
@@ -120,6 +121,7 @@ OMP_NUM_THREADS=8 .venv/bin/python scripts/benchmark_env_sps.py <env> --total-ag
 Latest local comparison:
 - `orbit_wars_lite`, 848 obs / 30 continuous actions, old validated decoder: `~63k` noop SPS, `~24k` dense-random SPS with `OMP_NUM_THREADS=8`; `~20k` noop, `~11k` random with `OMP_NUM_THREADS=1`.
 - `orbit_wars_lite`, direct direction decoder: `~146k` noop SPS, `~75k` dense-random SPS with `OMP_NUM_THREADS=8`, `512` agents, `300` timed steps on the local machine.
+- `orbit_wars_lite`, direct decoder plus movement broadphase: longer local run gave `~126k` noop SPS and `~84k` dense-random SPS with `OMP_NUM_THREADS=8`, `512` agents, `1000` timed steps.
 - `moba`, 510 byte obs / 6 discrete actions: `~102k` noop SPS, `~64k` random SPS with default local OpenMP.
 - `drone`, 19 obs / 4 continuous actions: `~329k` noop SPS, `~143k` random SPS with default local OpenMP.
 - `robocode`, 16 obs / 5 discrete actions, moving bullets/collisions: `~1.2M` noop SPS, `~817k` random SPS with default local OpenMP; explicit thread runs were noisy but still much faster than lite.
@@ -127,7 +129,7 @@ Latest local comparison:
 Interpretation:
 - Other moving Puffer envs are fast because their action/obs contracts are compact and their expensive loops are tightly bounded.
 - Orbit Wars Lite used to be slowest when random actions triggered six validated launch attempts per agent. The current direct-direction decoder removes that validation cost and substantially improves both noop and random local benchmarks; re-benchmark on the target CPU before choosing the next optimization.
-- The strongest remaining optimization candidates are observation construction, fleet lifetime/count, movement/collision broadphase, and reusing already-computed fleet summaries. Avoid expensive all-fleet/all-planet projection features.
+- The strongest remaining optimization candidates are observation construction, persistent active-fleet bookkeeping if fleet scans still matter, fleet lifetime/count, and reusing already-computed fleet summaries. Avoid expensive all-fleet/all-planet projection features.
 
 Next speed checks:
 1. Benchmark on the actual target CPU before rewriting more code, but compare against `moba`/`robocode` too.

@@ -98,6 +98,9 @@ Current lite speed work is useful and should be kept:
 - Cached future planet positions for aim validation.
 - Active-fleet list and precomputed fleet `cos/sin` in observation building.
 - Cached ID-sorted planet observation slots in `EnvCache`, rebuilt once per step/signature instead of once per player.
+- Observation fast paths skip fleet-grid and clean-fleet work when no fleets are active, and skip the fleet-slot scan entirely before the first launch.
+- Fleet-grid summaries are now built once per observation pass and converted cheaply into each player-relative view.
+- Normal movement/observation active-fleet scans are bounded by `min(next_fleet_id, OW_MAX_FLEETS)` before all fleet slots have ever been used.
 - Precomputed per-player production totals.
 - Cached fleet velocity in movement.
 - Fleet movement now has a no-fleet fast path, active-fleet/active-planet local lists, and conservative swept-AABB rejection before exact planet collision checks.
@@ -124,6 +127,7 @@ Latest local comparison:
 - `orbit_wars_lite`, direct direction decoder: `~146k` noop SPS, `~75k` dense-random SPS with `OMP_NUM_THREADS=8`, `512` agents, `300` timed steps on the local machine.
 - `orbit_wars_lite`, direct decoder plus movement broadphase: longer local run gave `~126k` noop SPS and `~84k` dense-random SPS with `OMP_NUM_THREADS=8`, `512` agents, `1000` timed steps.
 - `orbit_wars_lite`, plus cached planet-slot ordering: short local run gave `~183k` noop SPS and `~95k` dense-random SPS with `OMP_NUM_THREADS=8`, `512` agents, `300` timed steps.
+- `orbit_wars_lite`, plus observation fleet fast paths, shared grid summaries, and bounded fleet scans: longer local run gave `~275k` noop SPS and `~124k` dense-random SPS with `OMP_NUM_THREADS=8`, `512` agents, `1000` timed steps.
 - `moba`, 510 byte obs / 6 discrete actions: `~102k` noop SPS, `~64k` random SPS with default local OpenMP.
 - `drone`, 19 obs / 4 continuous actions: `~329k` noop SPS, `~143k` random SPS with default local OpenMP.
 - `robocode`, 16 obs / 5 discrete actions, moving bullets/collisions: `~1.2M` noop SPS, `~817k` random SPS with default local OpenMP; explicit thread runs were noisy but still much faster than lite.
@@ -131,7 +135,7 @@ Latest local comparison:
 Interpretation:
 - Other moving Puffer envs are fast because their action/obs contracts are compact and their expensive loops are tightly bounded.
 - Orbit Wars Lite used to be slowest when random actions triggered six validated launch attempts per agent. The current direct-direction decoder removes that validation cost and substantially improves both noop and random local benchmarks; re-benchmark on the target CPU before choosing the next optimization.
-- The strongest remaining optimization candidates are observation construction, persistent active-fleet bookkeeping if fleet scans still matter, fleet lifetime/count, and reusing already-computed fleet summaries. Planet slot sorting is already cached. Avoid expensive all-fleet/all-planet projection features.
+- The strongest remaining optimization candidates are remaining observation construction, persistent active-fleet bookkeeping if post-launch fleet scans still matter, fleet lifetime/count, and game-over/scoring fleet summaries. Planet slot sorting and fleet-grid summaries are already cached/shared. Avoid expensive all-fleet/all-planet projection features.
 
 Next speed checks:
 1. Benchmark on the actual target CPU before rewriting more code, but compare against `moba`/`robocode` too.

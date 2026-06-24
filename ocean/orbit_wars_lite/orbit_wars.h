@@ -67,6 +67,7 @@
 #define OW_LITE_MAX_ACTIVE_SLOTS   OW_LITE_LAUNCH_SLOTS
 #define OW_TRAIN_PLANET_OBS_FEAT   OW_LITE_PLANET_OBS_FEAT
 #define OW_TRAIN_GLOBAL_OBS_FEAT   OW_LITE_GLOBAL_OBS_FEAT
+#define OW_LITE_GRID_CELLS (OW_LITE_GRID_SIZE * OW_LITE_GRID_SIZE)
 #define OW_LITE_GRID_OBS_SIZE (OW_LITE_GRID_SIZE * OW_LITE_GRID_SIZE * OW_LITE_GRID_FEAT)
 #define OW_LITE_TOP_FLEET_OBS_SIZE (OW_LITE_TOP_FLEETS * OW_LITE_TOP_FLEET_OBS_FEAT)
 #define OW_TRAIN_OBS_SIZE (OW_MAX_PLANETS * OW_LITE_PLANET_OBS_FEAT + \
@@ -330,6 +331,57 @@ static const int* ow_cached_planet_slots_by_id(OrbitWars* env) {
         cache->planet_slots_signature = signature;
     }
     return cache->planet_slots;
+}
+
+static inline int ow_fleet_slot_scan_limit(OrbitWars* env) {
+    if (env->next_fleet_id <= 0) return 0;
+    return env->next_fleet_id < OW_MAX_FLEETS ? env->next_fleet_id : OW_MAX_FLEETS;
+}
+
+static void ow_build_lite_fleet_grid_summaries(OrbitWars* env,
+                                               const int* active_fleet_indices,
+                                               int num_active_fleets,
+                                               const float* fleet_cos,
+                                               const float* fleet_sin,
+                                               int na,
+                                               float* grid_total_mass,
+                                               float* grid_total_dx,
+                                               float* grid_total_dy,
+                                               float* grid_owner_mass,
+                                               float* grid_owner_dx,
+                                               float* grid_owner_dy) {
+    memset(grid_total_mass, 0, sizeof(float) * OW_LITE_GRID_CELLS);
+    memset(grid_total_dx, 0, sizeof(float) * OW_LITE_GRID_CELLS);
+    memset(grid_total_dy, 0, sizeof(float) * OW_LITE_GRID_CELLS);
+    memset(grid_owner_mass, 0, sizeof(float) * OW_MAX_PLAYERS * OW_LITE_GRID_CELLS);
+    memset(grid_owner_dx, 0, sizeof(float) * OW_MAX_PLAYERS * OW_LITE_GRID_CELLS);
+    memset(grid_owner_dy, 0, sizeof(float) * OW_MAX_PLAYERS * OW_LITE_GRID_CELLS);
+
+    for (int i = 0; i < num_active_fleets; i++) {
+        int f = active_fleet_indices[i];
+        FleetC* fl = &env->fleets[f];
+        if (fl->owner < 0 || fl->owner >= na) continue;
+
+        int gx = (int)(fl->x * 0.1);
+        int gy = (int)(fl->y * 0.1);
+        if (gx < 0) gx = 0;
+        if (gx >= OW_LITE_GRID_SIZE) gx = OW_LITE_GRID_SIZE - 1;
+        if (gy < 0) gy = 0;
+        if (gy >= OW_LITE_GRID_SIZE) gy = OW_LITE_GRID_SIZE - 1;
+
+        int cell = gy * OW_LITE_GRID_SIZE + gx;
+        int owner_cell = fl->owner * OW_LITE_GRID_CELLS + cell;
+        float mass = ow_clampf((float)fl->ships / 100.0f, 0.0f, 5.0f);
+        float dir_x = fleet_cos[f] * mass;
+        float dir_y = fleet_sin[f] * mass;
+
+        grid_total_mass[cell] += mass;
+        grid_total_dx[cell] += dir_x;
+        grid_total_dy[cell] += dir_y;
+        grid_owner_mass[owner_cell] += mass;
+        grid_owner_dx[owner_cell] += dir_x;
+        grid_owner_dy[owner_cell] += dir_y;
+    }
 }
 
 static float ow_interval_pair_strength(float xs, float rs, float xt, float rt) {
@@ -831,42 +883,21 @@ static void ow_compute_and_scale_observations_impl(OrbitWars* env, int a, float*
                                                    const int* active_fleet_indices, int num_active_fleets,
                                                    const float* fleet_cos, const float* fleet_sin,
                                                    const int* planet_slots,
+                                                   const float* grid_total_mass,
+                                                   const float* grid_total_dx,
+                                                   const float* grid_total_dy,
+                                                   const float* grid_owner_mass,
+                                                   const float* grid_owner_dx,
+                                                   const float* grid_owner_dy,
                                                    int own_prod, int enemy_prod) {
     int na = env->num_agents;
     int player_id = ow_player_for_slot(env, a);
-    float fleet_grid[OW_LITE_GRID_OBS_SIZE] = {0};
     int clean_fleets[OW_LITE_TOP_FLEETS];
 
     for (int i = 0; i < OW_LITE_TOP_FLEETS; i++) {
         clean_fleets[i] = -1;
     }
     memset(out_obs, 0, sizeof(float) * OW_OBS_SIZE);
-
-    for (int i = 0; i < num_active_fleets; i++) {
-        int f = active_fleet_indices[i];
-        FleetC* fl = &env->fleets[f];
-
-        int gx = (int)(fl->x * 0.1);
-        int gy = (int)(fl->y * 0.1);
-        if (gx < 0) gx = 0;
-        if (gx >= OW_LITE_GRID_SIZE) gx = OW_LITE_GRID_SIZE - 1;
-        if (gy < 0) gy = 0;
-        if (gy >= OW_LITE_GRID_SIZE) gy = OW_LITE_GRID_SIZE - 1;
-
-        int base = (gy * OW_LITE_GRID_SIZE + gx) * OW_LITE_GRID_FEAT;
-        float mass = ow_clampf((float)fl->ships / 100.0f, 0.0f, 5.0f);
-        float dir_x = fleet_cos[f] * mass;
-        float dir_y = fleet_sin[f] * mass;
-        if (fl->owner == player_id) {
-            fleet_grid[base + 0] += mass;
-            fleet_grid[base + 2] += dir_x;
-            fleet_grid[base + 3] += dir_y;
-        } else {
-            fleet_grid[base + 1] += mass;
-            fleet_grid[base + 2] -= dir_x;
-            fleet_grid[base + 3] -= dir_y;
-        }
-    }
 
     if (num_active_fleets > 0) {
         int start = (env->current_step + player_id * OW_LITE_TOP_FLEETS) % num_active_fleets;
@@ -900,24 +931,37 @@ static void ow_compute_and_scale_observations_impl(OrbitWars* env, int a, float*
         idx += OW_LITE_PLANET_OBS_FEAT;
     }
 
-    for (int i = 0; i < OW_LITE_GRID_OBS_SIZE; i++) {
-        out_obs[idx++] = ow_clampf(fleet_grid[i], -5.0f, 5.0f);
-    }
-
-    for (int k = 0; k < OW_LITE_TOP_FLEETS; k++) {
-        int fi = clean_fleets[k];
-        if (fi >= 0) {
-            FleetC* fl = &env->fleets[fi];
-            float owner_rel = fl->owner == player_id ? 1.0f : -1.0f;
-            out_obs[idx + 0] = 1.0f;
-            out_obs[idx + 1] = owner_rel;
-            out_obs[idx + 2] = ow_clampf((float)(fl->x - OW_SUN_X) / OW_SUN_X, -1.0f, 1.0f);
-            out_obs[idx + 3] = ow_clampf((float)(fl->y - OW_SUN_Y) / OW_SUN_Y, -1.0f, 1.0f);
-            out_obs[idx + 4] = fleet_cos[fi];
-            out_obs[idx + 5] = fleet_sin[fi];
-            out_obs[idx + 6] = ow_clampf((float)fl->ships / 200.0f, 0.0f, 5.0f);
+    if (num_active_fleets > 0) {
+        int player_base = player_id * OW_LITE_GRID_CELLS;
+        for (int cell = 0; cell < OW_LITE_GRID_CELLS; cell++) {
+            int owner_cell = player_base + cell;
+            float own_mass = grid_owner_mass[owner_cell];
+            float own_dx = grid_owner_dx[owner_cell];
+            float own_dy = grid_owner_dy[owner_cell];
+            out_obs[idx + 0] = ow_clampf(own_mass, -5.0f, 5.0f);
+            out_obs[idx + 1] = ow_clampf(grid_total_mass[cell] - own_mass, -5.0f, 5.0f);
+            out_obs[idx + 2] = ow_clampf(2.0f * own_dx - grid_total_dx[cell], -5.0f, 5.0f);
+            out_obs[idx + 3] = ow_clampf(2.0f * own_dy - grid_total_dy[cell], -5.0f, 5.0f);
+            idx += OW_LITE_GRID_FEAT;
         }
-        idx += OW_LITE_TOP_FLEET_OBS_FEAT;
+
+        for (int k = 0; k < OW_LITE_TOP_FLEETS; k++) {
+            int fi = clean_fleets[k];
+            if (fi >= 0) {
+                FleetC* fl = &env->fleets[fi];
+                float owner_rel = fl->owner == player_id ? 1.0f : -1.0f;
+                out_obs[idx + 0] = 1.0f;
+                out_obs[idx + 1] = owner_rel;
+                out_obs[idx + 2] = ow_clampf((float)(fl->x - OW_SUN_X) / OW_SUN_X, -1.0f, 1.0f);
+                out_obs[idx + 3] = ow_clampf((float)(fl->y - OW_SUN_Y) / OW_SUN_Y, -1.0f, 1.0f);
+                out_obs[idx + 4] = fleet_cos[fi];
+                out_obs[idx + 5] = fleet_sin[fi];
+                out_obs[idx + 6] = ow_clampf((float)fl->ships / 200.0f, 0.0f, 5.0f);
+            }
+            idx += OW_LITE_TOP_FLEET_OBS_FEAT;
+        }
+    } else {
+        idx += OW_LITE_GRID_OBS_SIZE + OW_LITE_TOP_FLEET_OBS_SIZE;
     }
 
     int my_ships = total_ships[player_id];
@@ -956,10 +1000,30 @@ static inline void ow_compute_and_scale_observations(OrbitWars* env, int a, floa
         if (pl->owner == player_id) own_prod += pl->production;
         else if (pl->owner >= 0) enemy_prod += pl->production;
     }
-    ow_compute_and_scale_observations_impl(env, a, out_obs, total_ships, sum_all_ships,
-                                           active_fleet_indices, num_active_fleets, fleet_cos, fleet_sin,
-                                           planet_slots,
-                                           own_prod, enemy_prod);
+    if (num_active_fleets > 0) {
+        float grid_total_mass[OW_LITE_GRID_CELLS];
+        float grid_total_dx[OW_LITE_GRID_CELLS];
+        float grid_total_dy[OW_LITE_GRID_CELLS];
+        float grid_owner_mass[OW_MAX_PLAYERS * OW_LITE_GRID_CELLS];
+        float grid_owner_dx[OW_MAX_PLAYERS * OW_LITE_GRID_CELLS];
+        float grid_owner_dy[OW_MAX_PLAYERS * OW_LITE_GRID_CELLS];
+        ow_build_lite_fleet_grid_summaries(env, active_fleet_indices, num_active_fleets,
+                                           fleet_cos, fleet_sin, env->num_agents,
+                                           grid_total_mass, grid_total_dx, grid_total_dy,
+                                           grid_owner_mass, grid_owner_dx, grid_owner_dy);
+        ow_compute_and_scale_observations_impl(env, a, out_obs, total_ships, sum_all_ships,
+                                               active_fleet_indices, num_active_fleets, fleet_cos, fleet_sin,
+                                               planet_slots,
+                                               grid_total_mass, grid_total_dx, grid_total_dy,
+                                               grid_owner_mass, grid_owner_dx, grid_owner_dy,
+                                               own_prod, enemy_prod);
+    } else {
+        ow_compute_and_scale_observations_impl(env, a, out_obs, total_ships, sum_all_ships,
+                                               active_fleet_indices, num_active_fleets, fleet_cos, fleet_sin,
+                                               planet_slots,
+                                               NULL, NULL, NULL, NULL, NULL, NULL,
+                                               own_prod, enemy_prod);
+    }
 }
 #endif
 
@@ -981,16 +1045,19 @@ static void ow_compute_observations(OrbitWars* env) {
     float fleet_cos[OW_MAX_FLEETS];
     float fleet_sin[OW_MAX_FLEETS];
 
-    for (int f = 0; f < OW_MAX_FLEETS; f++) {
-        FleetC* fl = &env->fleets[f];
-        if (fl->active) {
-            active_fleet_indices[num_active_fleets++] = f;
-            if (fl->owner >= 0 && fl->owner < na) {
-                total_ships[fl->owner] += fl->ships;
+    int fleet_scan_limit = ow_fleet_slot_scan_limit(env);
+    if (fleet_scan_limit > 0) {
+        for (int f = 0; f < fleet_scan_limit; f++) {
+            FleetC* fl = &env->fleets[f];
+            if (fl->active) {
+                active_fleet_indices[num_active_fleets++] = f;
+                if (fl->owner >= 0 && fl->owner < na) {
+                    total_ships[fl->owner] += fl->ships;
+                }
+                float angle = (float)fl->angle;
+                fleet_cos[f] = cosf(angle);
+                fleet_sin[f] = sinf(angle);
             }
-            float angle = (float)fl->angle;
-            fleet_cos[f] = cosf(angle);
-            fleet_sin[f] = sinf(angle);
         }
     }
 
@@ -1012,22 +1079,49 @@ static void ow_compute_observations(OrbitWars* env) {
     const int* planet_slots = ow_cached_planet_slots_by_id(env);
 #endif
 
-    for (int a = 0; a < na; a++) {
 #ifdef PARITY_TESTING
+    for (int a = 0; a < na; a++) {
         float raw_obs[OW_OBS_SIZE];
         ow_compute_raw_observations(env, a, raw_obs, total_ships, sum_all_ships);
         memcpy(env->raw_observations[a], raw_obs, sizeof(float) * OW_OBS_SIZE);
         ow_process_observations(env, a, raw_obs, env->obs_ptr[a]);
-#else
-        int player_id = ow_player_for_slot(env, a);
-        int own_prod = prod_by_player[player_id];
-        int enemy_prod = sum_all_prod - own_prod;
-        ow_compute_and_scale_observations_impl(env, a, env->obs_ptr[a], total_ships, sum_all_ships,
-                                               active_fleet_indices, num_active_fleets, fleet_cos, fleet_sin,
-                                               planet_slots,
-                                               own_prod, enemy_prod);
-#endif
     }
+#else
+    if (num_active_fleets > 0) {
+        float grid_total_mass[OW_LITE_GRID_CELLS];
+        float grid_total_dx[OW_LITE_GRID_CELLS];
+        float grid_total_dy[OW_LITE_GRID_CELLS];
+        float grid_owner_mass[OW_MAX_PLAYERS * OW_LITE_GRID_CELLS];
+        float grid_owner_dx[OW_MAX_PLAYERS * OW_LITE_GRID_CELLS];
+        float grid_owner_dy[OW_MAX_PLAYERS * OW_LITE_GRID_CELLS];
+        ow_build_lite_fleet_grid_summaries(env, active_fleet_indices, num_active_fleets,
+                                           fleet_cos, fleet_sin, na,
+                                           grid_total_mass, grid_total_dx, grid_total_dy,
+                                           grid_owner_mass, grid_owner_dx, grid_owner_dy);
+        for (int a = 0; a < na; a++) {
+            int player_id = ow_player_for_slot(env, a);
+            int own_prod = prod_by_player[player_id];
+            int enemy_prod = sum_all_prod - own_prod;
+            ow_compute_and_scale_observations_impl(env, a, env->obs_ptr[a], total_ships, sum_all_ships,
+                                                   active_fleet_indices, num_active_fleets, fleet_cos, fleet_sin,
+                                                   planet_slots,
+                                                   grid_total_mass, grid_total_dx, grid_total_dy,
+                                                   grid_owner_mass, grid_owner_dx, grid_owner_dy,
+                                                   own_prod, enemy_prod);
+        }
+    } else {
+        for (int a = 0; a < na; a++) {
+            int player_id = ow_player_for_slot(env, a);
+            int own_prod = prod_by_player[player_id];
+            int enemy_prod = sum_all_prod - own_prod;
+            ow_compute_and_scale_observations_impl(env, a, env->obs_ptr[a], total_ships, sum_all_ships,
+                                                   active_fleet_indices, num_active_fleets, fleet_cos, fleet_sin,
+                                                   planet_slots,
+                                                   NULL, NULL, NULL, NULL, NULL, NULL,
+                                                   own_prod, enemy_prod);
+        }
+    }
+#endif
 }
 
 /* ========================================================================
@@ -1203,7 +1297,8 @@ static void ow_phase_production(OrbitWars* env) {
  * ======================================================================== */
 
 static void ow_phase_fleet_movement(OrbitWars* env) {
-    if (env->next_fleet_id == 0) return;
+    int fleet_scan_limit = ow_fleet_slot_scan_limit(env);
+    if (fleet_scan_limit == 0) return;
 
     double next_px[OW_MAX_PLANETS];
     double next_py[OW_MAX_PLANETS];
@@ -1216,7 +1311,7 @@ static void ow_phase_fleet_movement(OrbitWars* env) {
     int active_fleets[OW_MAX_FLEETS];
     int num_active_fleets = 0;
 
-    for (int fi = 0; fi < OW_MAX_FLEETS; fi++) {
+    for (int fi = 0; fi < fleet_scan_limit; fi++) {
         if (env->fleets[fi].active) {
             active_fleets[num_active_fleets++] = fi;
         }

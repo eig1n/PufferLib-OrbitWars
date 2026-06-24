@@ -14,13 +14,16 @@ Scope: implementation-only speedups that keep the lite public contract intact un
    - Maintain `active_fleet_indices[]` and `num_active_fleets`, or rebuild once per step and reuse.
    - Use it for movement, ship totals, fleet grid, top fleets, game-over asset checks, and terminal scoring.
 
-3. Add no-fleet fast paths.
-   - If `num_active_fleets == 0`, skip fleet movement slot scans.
-   - In observation building, skip fleet-grid accumulation and top-fleet ranking; the zeroed obs buffer already represents empty fleet features.
+3. DONE: Add no-fleet fast paths.
+   - Fleet movement skips slot scans before any launch and when no active fleets remain.
+   - Observation building skips the fleet-slot scan before the first launch.
+   - If `num_active_fleets == 0`, lite observations skip fleet-grid and clean-fleet work; the zeroed obs buffer represents empty fleet features.
+   - Normal movement/observation scans are bounded by `min(next_fleet_id, OW_MAX_FLEETS)` before all fleet slots have ever been used.
 
-4. Avoid repeated per-player observation work.
-   - Compute player-independent planet features once, then apply owner-relative fields per observing player.
-   - Compute fleet grid/top-fleet summaries in one pass where possible, or cheaply specialize them per player without rebuilding unrelated state.
+4. PARTIAL: Avoid repeated per-player observation work.
+   - Fleet grid summaries are built once per observation pass, then converted into each player-relative view.
+   - Planet slot sorting is cached once per step.
+   - Remaining candidate: precompute player-independent planet feature scalars if profiling still points at observation construction.
 
 ## Fleet Collision Broadphase
 

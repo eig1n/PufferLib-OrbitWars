@@ -289,31 +289,29 @@ def main():
     env_dense = make_c_env(lib, planets, extra_fleets)
     verify_observation_parity(lib, env_dense, 0)
 
-    print("\n--- Running Action Parity Test 1 (Static Takeover) ---")
+    print("\n--- Running Action Parity Test 1 (Direct Direction Launch) ---")
     # Action array layout: 6 slots * 5 features
-    # Each slot: amount, sx, sy, tx, ty
-    # We want Player 0 to target Planet 1 (enemy) from Planet 0 (owned)
-    # Source is at 20, 20. Target is at 10, 90.
+    # Each slot: amount, dir_x, dir_y, source_x, source_y
+    # We want Player 0 to launch north-ish from Planet 0. Lite intentionally
+    # does not select a target or validate whether the shot will hit.
     actions = [0.0] * 30
     # Slot 0 action
     actions[0] = 0.9  # amount
-    actions[1] = float(20.0 / 50.0 - 1.0) # sx (matches 20.0)
-    actions[2] = float(20.0 / 50.0 - 1.0) # sy (matches 20.0)
-    actions[3] = float(10.0 / 50.0 - 1.0) # tx (matches 10.0)
-    actions[4] = float(90.0 / 50.0 - 1.0) # ty (matches 90.0)
+    actions[1] = -0.2  # dir_x
+    actions[2] = 1.0   # dir_y
+    actions[3] = float(20.0 / 50.0 - 1.0) # source x (matches 20.0)
+    actions[4] = float(20.0 / 50.0 - 1.0) # source y (matches 20.0)
     
     verify_action_parity(lib, env, 0, actions)
 
-    print("\n--- Running Action Parity Test 2 (No-op/Blocker/Invalid) ---")
-    # Let's send a ray straight through the sun (50, 50)
-    # Source: 20, 20. Target: 90, 90 (passing right through center 50,50)
-    # This should be blocked by the sun, so 0 moves.
+    print("\n--- Running Action Parity Test 2 (No-op/Zero Direction) ---")
+    # Positive amount with a zero direction vector should be skipped.
     actions_invalid = [0.0] * 30
     actions_invalid[0] = 0.9
-    actions_invalid[1] = float(20.0 / 50.0 - 1.0)
-    actions_invalid[2] = float(20.0 / 50.0 - 1.0)
-    actions_invalid[3] = float(90.0 / 50.0 - 1.0)
-    actions_invalid[4] = float(90.0 / 50.0 - 1.0)
+    actions_invalid[1] = 0.0
+    actions_invalid[2] = 0.0
+    actions_invalid[3] = float(20.0 / 50.0 - 1.0)
+    actions_invalid[4] = float(20.0 / 50.0 - 1.0)
     
     verify_action_parity(lib, env, 0, actions_invalid)
 

@@ -70,7 +70,9 @@ def test_lite_decoder_one_fleet_per_source():
     assert lib.test_lite_obs_size() == EXPECTED_OBS_SIZE
     assert lib.test_lite_num_atns() == EXPECTED_NUM_ATNS
     assert lib.test_lite_amount_to_ships(0.0, 100) == 0
-    assert 1 <= lib.test_lite_amount_to_ships(0.6, 100) < lib.test_lite_amount_to_ships(1.0, 100)
+    assert lib.test_lite_amount_to_ships(0.1, 100) == 20
+    assert lib.test_lite_amount_to_ships(0.6, 300) == 120
+    assert lib.test_lite_amount_to_ships(1.0, 100) == 100
 
     env = make_env(
         lib,
@@ -82,17 +84,17 @@ def test_lite_decoder_one_fleet_per_source():
     )
     actions = np.zeros(EXPECTED_NUM_ATNS, dtype=np.float32)
     slots = [
-        (1.0, 20, 20, 80, 20),
-        (1.0, 21, 20, 80, 20),
-        (1.0, 20, 30, 80, 20),
+        (1.0, 1.0, 0.0, 20, 20),
+        (0.5, 1.0, 0.0, 21, 20),
+        (0.9, 0.0, 1.0, 20, 30),
     ]
-    for i, (amount, sx, sy, tx, ty) in enumerate(slots):
+    for i, (amount, dir_x, dir_y, sx, sy) in enumerate(slots):
         base = i * 5
         actions[base + 0] = amount
-        actions[base + 1] = board_to_action(sx)
-        actions[base + 2] = board_to_action(sy)
-        actions[base + 3] = board_to_action(tx)
-        actions[base + 4] = board_to_action(ty)
+        actions[base + 1] = dir_x
+        actions[base + 2] = dir_y
+        actions[base + 3] = board_to_action(sx)
+        actions[base + 4] = board_to_action(sy)
 
     launches = lib.test_decode_lite_actions_for_slot(
         ctypes.byref(env),
@@ -102,6 +104,9 @@ def test_lite_decoder_one_fleet_per_source():
     assert launches == 2
     assert env.num_raw_actions[0] == 2
     assert {env.raw_actions[0][i].from_planet_id for i in range(2)} == {0, 1}
+    angles = {env.raw_actions[0][i].from_planet_id: env.raw_actions[0][i].angle for i in range(2)}
+    assert abs(angles[0]) < 1e-5
+    assert abs(angles[1] - np.pi / 2.0) < 1e-5
 
 
 def test_lite_build_and_step():

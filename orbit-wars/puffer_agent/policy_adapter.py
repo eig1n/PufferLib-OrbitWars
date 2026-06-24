@@ -348,18 +348,7 @@ def amount_to_ships(amount: float, available: int) -> int:
     if available <= 0 or amount <= 0.0:
         return 0
     u = _clamp(amount, 0.0, 1.0)
-    low_cap = available if available < 200 else 200
-    if available <= low_cap or u <= 0.85:
-        t = u / 0.85
-        if t > 1.0:
-            t = 1.0
-        ships = 1 + int(t * t * (low_cap - 1) + 0.5)
-    else:
-        t = (u - 0.85) / 0.15
-        ships = low_cap + int(t * t * (available - low_cap) + 0.5)
-
-    if ships < 1:
-        ships = 1
+    ships = int(u * 200.0 + 0.5)
     if ships > available:
         ships = available
     return ships
@@ -475,22 +464,23 @@ def compact_features(obs: dict[str, Any], player_id: int) -> list[float]:
     for val in fleet_grid:
         features.append(_clamp(val, -5.0, 5.0))
 
-    # 3. Top fleets (8 * 7 = 56 floats)
-    scored_fleets = []
+    # 3. Clean fleet slots (8 * 7 = 56 floats), rotating for coverage.
+    active_fleets = []
     for idx, f in enumerate(raw_fleets):
         if len(f) < 7:
             continue
-        owner = int(f[1])
-        ships = int(f[6])
-        score = float(ships)
-        if owner != player_id:
-            score += 25.0
-        scored_fleets.append((score, idx, f))
-    scored_fleets.sort(key=lambda x: x[0], reverse=True)
+        active_fleets.append(f)
+
+    clean_fleets = []
+    if active_fleets:
+        start = (step + player_id * 8) % len(active_fleets)
+        count = min(len(active_fleets), 8)
+        for k in range(count):
+            clean_fleets.append(active_fleets[(start + k) % len(active_fleets)])
 
     for k in range(8):
-        if k < len(scored_fleets):
-            score, idx, f = scored_fleets[k]
+        if k < len(clean_fleets):
+            f = clean_fleets[k]
             owner = int(f[1])
             fx, fy = float(f[2]), float(f[3])
             angle = float(f[4])
@@ -533,8 +523,6 @@ def policy_actions_to_moves(actions: Iterable[float], obs: dict[str, Any], playe
 
     raw_planets = obs.get("planets", [])
     comet_ids = set(obs.get("comet_planet_ids", []))
-    step = int(obs.get("step", 0))
-    angular_velocity = float(obs.get("angular_velocity", 0.03))
 
     planets = [list(p[:7]) for p in raw_planets if len(p) >= 7]
     planets.sort(key=lambda p: int(p[0]))
@@ -569,8 +557,13 @@ def policy_actions_to_moves(actions: Iterable[float], obs: dict[str, Any], playe
             break
 
         base = s * 5
-        sx = action_to_board(act[base + 1])
-        sy = action_to_board(act[base + 2])
+        dir_x = _clamp(float(act[base + 1]), -1.0, 1.0)
+        dir_y = _clamp(float(act[base + 2]), -1.0, 1.0)
+        if dir_x * dir_x + dir_y * dir_y < 1e-6:
+            continue
+
+        sx = action_to_board(act[base + 3])
+        sy = action_to_board(act[base + 4])
 
         src_id = -1
         best_d2 = 1e30
@@ -588,44 +581,13 @@ def policy_actions_to_moves(actions: Iterable[float], obs: dict[str, Any], playe
         if src_id < 0:
             continue
 
-        tx = action_to_board(act[base + 3])
-        ty = action_to_board(act[base + 4])
-
-        tgt_id = -1
-        best_d2 = 1e30
-        for p in planets:
-            pid, owner, px, py, radius, ships, production, is_comet, is_orbiting = p
-            if pid == src_id:
-                continue
-            dx = px - tx
-            dy = py - ty
-            d2 = dx * dx + dy * dy
-            if d2 < best_d2:
-                best_d2 = d2
-                tgt_id = pid
-
-        if tgt_id < 0:
-            continue
-
         src_planet = next(p for p in planets if p[0] == src_id)
-        tgt_planet = next(p for p in planets if p[0] == tgt_id)
-
         available = src_planet[5] - 1
         ships = amount_to_ships(amount, available)
         if ships <= 0:
             continue
 
-        angle = math.atan2(ty - float(src_planet[3]), tx - float(src_planet[2])) % (2.0 * math.pi)
-
-        is_tgt_orbiting_or_comet = tgt_planet[7] or tgt_planet[8]
-
-        if is_tgt_orbiting_or_comet:
-            valid = _validate_launch_angle(src_planet, tgt_planet, ships, angle, step, angular_velocity, planets)
-        else:
-            valid = _validate_static_target_angle(src_planet, tgt_planet, ships, angle, step, angular_velocity, planets)
-
-        if not valid:
-            continue
+        angle = math.atan2(dir_y, dir_x) % (2.0 * math.pi)
 
         moves.append([int(src_id), angle, int(ships)])
         source_used_ids.add(src_id)

@@ -54,7 +54,7 @@
 #define OW_FLEET_OBS_FEAT OW_RAW_FLEET_OBS_FEAT
 #define OW_GLOBAL_OBS_FEAT OW_RAW_GLOBAL_OBS_FEAT
 
-/* Lite training observation layout: planets + cheap fleet grid + top fleets. */
+/* Lite training observation layout: planets + cheap fleet grid + clean fleet slots. */
 #define OW_LITE_LAUNCH_SLOTS       6
 #define OW_LITE_ATN_FEAT           5
 #define OW_LITE_PLANET_OBS_FEAT    8
@@ -80,7 +80,7 @@
 #define OW_OBS_SIZE OW_TRAIN_OBS_SIZE
 #endif
 
-/* Action space: 6 launch slots of (send amount, source x/y, aim x/y). */
+/* Action space: 6 launch slots of (send amount, direction x/y, source x/y). */
 #define OW_NUM_ATNS          (OW_LITE_LAUNCH_SLOTS * OW_LITE_ATN_FEAT)
 #define OW_NUM_ANGLE_BUCKETS 64
 #define OW_NUM_SHIP_BUCKETS  16
@@ -805,12 +805,10 @@ static void ow_compute_and_scale_observations_impl(OrbitWars* env, int a, float*
     int player_id = ow_player_for_slot(env, a);
     int slots[OW_MAX_PLANETS];
     float fleet_grid[OW_LITE_GRID_OBS_SIZE] = {0};
-    int top_fleets[OW_LITE_TOP_FLEETS];
-    float top_scores[OW_LITE_TOP_FLEETS];
+    int clean_fleets[OW_LITE_TOP_FLEETS];
 
     for (int i = 0; i < OW_LITE_TOP_FLEETS; i++) {
-        top_fleets[i] = -1;
-        top_scores[i] = -1.0f;
+        clean_fleets[i] = -1;
     }
     ow_planet_slots_by_id(env, slots);
     memset(out_obs, 0, sizeof(float) * OW_OBS_SIZE);
@@ -839,19 +837,13 @@ static void ow_compute_and_scale_observations_impl(OrbitWars* env, int a, float*
             fleet_grid[base + 2] -= dir_x;
             fleet_grid[base + 3] -= dir_y;
         }
+    }
 
-        float score = (float)fl->ships;
-        if (fl->owner != player_id) score += 25.0f;
-        for (int pos = 0; pos < OW_LITE_TOP_FLEETS; pos++) {
-            if (score > top_scores[pos]) {
-                for (int move = OW_LITE_TOP_FLEETS - 1; move > pos; move--) {
-                    top_scores[move] = top_scores[move - 1];
-                    top_fleets[move] = top_fleets[move - 1];
-                }
-                top_scores[pos] = score;
-                top_fleets[pos] = f;
-                break;
-            }
+    if (num_active_fleets > 0) {
+        int start = (env->current_step + player_id * OW_LITE_TOP_FLEETS) % num_active_fleets;
+        int count = num_active_fleets < OW_LITE_TOP_FLEETS ? num_active_fleets : OW_LITE_TOP_FLEETS;
+        for (int k = 0; k < count; k++) {
+            clean_fleets[k] = active_fleet_indices[(start + k) % num_active_fleets];
         }
     }
 
@@ -884,7 +876,7 @@ static void ow_compute_and_scale_observations_impl(OrbitWars* env, int a, float*
     }
 
     for (int k = 0; k < OW_LITE_TOP_FLEETS; k++) {
-        int fi = top_fleets[k];
+        int fi = clean_fleets[k];
         if (fi >= 0) {
             FleetC* fl = &env->fleets[fi];
             float owner_rel = fl->owner == player_id ? 1.0f : -1.0f;
@@ -2016,18 +2008,7 @@ static int ow_lite_amount_to_ships(float amount, int available) {
     if (available <= 0 || amount <= OW_LITE_AMOUNT_EPS) return 0;
 
     float u = ow_clampf(amount, 0.0f, 1.0f);
-    int low_cap = available < 200 ? available : 200;
-    int ships = 1;
-    if (available <= low_cap || u <= 0.85f) {
-        float t = u / 0.85f;
-        if (t > 1.0f) t = 1.0f;
-        ships = 1 + (int)roundf(t * t * (float)(low_cap - 1));
-    } else {
-        float t = (u - 0.85f) / 0.15f;
-        ships = low_cap + (int)roundf(t * t * (float)(available - low_cap));
-    }
-
-    if (ships < 1) ships = 1;
+    int ships = (int)roundf(u * 200.0f);
     if (ships > available) ships = available;
     return ships;
 }
@@ -2040,23 +2021,6 @@ static int ow_lite_nearest_source(OrbitWars* env, int player_id, double x, doubl
         PlanetC* pl = &env->planets[pi];
         if (!pl->active || pl->owner != player_id || pl->ships <= 1 || used[pi]) continue;
         if (pl->x < 0.0) continue;
-        double dx = pl->x - x;
-        double dy = pl->y - y;
-        double d2 = dx * dx + dy * dy;
-        if (d2 < best_d2) {
-            best_d2 = d2;
-            best = pi;
-        }
-    }
-    return best;
-}
-
-static int ow_lite_nearest_target(OrbitWars* env, int src_idx, double x, double y) {
-    int best = -1;
-    double best_d2 = 1e30;
-    for (int pi = 0; pi < OW_MAX_PLANETS; pi++) {
-        PlanetC* pl = &env->planets[pi];
-        if (!pl->active || pi == src_idx || pl->x < 0.0) continue;
         double dx = pl->x - x;
         double dy = pl->y - y;
         double d2 = dx * dx + dy * dy;
@@ -2103,15 +2067,15 @@ static int ow_decode_lite_actions_for_slot(OrbitWars* env, int slot, const float
         int base = s * OW_LITE_ATN_FEAT;
         float amount = active_amounts[pos];
 
-        double sx = ow_lite_action_to_board(act[base + 1]);
-        double sy = ow_lite_action_to_board(act[base + 2]);
+        float dir_x = ow_clampf(act[base + 1], -1.0f, 1.0f);
+        float dir_y = ow_clampf(act[base + 2], -1.0f, 1.0f);
+        float dir_len2 = dir_x * dir_x + dir_y * dir_y;
+        if (dir_len2 < 1e-6f) continue;
+
+        double sx = ow_lite_action_to_board(act[base + 3]);
+        double sy = ow_lite_action_to_board(act[base + 4]);
         int src_idx = ow_lite_nearest_source(env, player_id, sx, sy, source_used);
         if (src_idx < 0) continue;
-
-        double tx = ow_lite_action_to_board(act[base + 3]);
-        double ty = ow_lite_action_to_board(act[base + 4]);
-        int tgt_idx = ow_lite_nearest_target(env, src_idx, tx, ty);
-        if (tgt_idx < 0) continue;
 
         int available = env->planets[src_idx].ships - 1;
         int ships = ow_lite_amount_to_ships(amount, available);
@@ -2120,12 +2084,7 @@ static int ow_decode_lite_actions_for_slot(OrbitWars* env, int slot, const float
         int ai = env->num_raw_actions[player_id];
         if (ai >= OW_MAX_ACTIONS_PER_PLAYER) break;
 
-        PlanetC* src = &env->planets[src_idx];
-        float angle = ow_norm_angle((float)atan2(ty - src->y, tx - src->x));
-        int valid = env->planet_orbits[tgt_idx] || env->planets[tgt_idx].is_comet
-            ? ow_validate_launch_angle(env, src_idx, tgt_idx, ships, angle, NULL)
-            : ow_validate_static_target_angle(env, src_idx, tgt_idx, ships, angle);
-        if (!valid) continue;
+        float angle = ow_norm_angle((float)atan2f(dir_y, dir_x));
 
         env->raw_actions[player_id][ai] = (RawActionC){
             .from_planet_id = env->planets[src_idx].id,

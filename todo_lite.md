@@ -106,7 +106,6 @@ Latest known 20-game CPU Kaggle runs:
   - `puffer_agent`: 4 wins
   - `random`: 16 wins
 
-Interpretation: The model learns and scales (win rate against sniper baseline doubled from 2 to 4). However, the policy is still in the early stages of learning, performing poorly against random entropy. Train much longer (e.g. overnight) or tune hyper-parameters before making final strategy conclusions.
 
 ## Performance Status
 

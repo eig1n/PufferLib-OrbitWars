@@ -160,8 +160,8 @@ def test_lite_build_and_step():
 
 
 def main():
-    test_lite_decoder_one_fleet_per_source()
     test_lite_build_and_step()
+    test_lite_decoder_one_fleet_per_source()
     print("orbit_wars_lite tests passed")
 
 

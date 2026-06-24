@@ -233,6 +233,10 @@ typedef struct {
     int fleet_id[OW_MAX_FLEETS];
     double fleet_dx[OW_MAX_FLEETS];
     double fleet_dy[OW_MAX_FLEETS];
+
+    int planet_slots[OW_MAX_PLANETS];
+    int planet_slots_step;
+    unsigned int planet_slots_signature;
 } EnvCache;
 
 static inline EnvCache* ow_get_cache(OrbitWars* env) {
@@ -241,6 +245,7 @@ static inline EnvCache* ow_get_cache(OrbitWars* env) {
         for (int f = 0; f < OW_MAX_FLEETS; f++) {
             cache->fleet_id[f] = -1;
         }
+        cache->planet_slots_step = -1;
         env->client = (Client*)cache;
     }
     return (EnvCache*)env->client;
@@ -306,6 +311,25 @@ static void ow_planet_slots_by_id(OrbitWars* env, int slots[OW_MAX_PLANETS]) {
         if (best < 0) break;
         slots[out] = best;
     }
+}
+
+static const int* ow_cached_planet_slots_by_id(OrbitWars* env) {
+    EnvCache* cache = ow_get_cache(env);
+    unsigned int signature = 2166136261u;
+    for (int i = 0; i < OW_MAX_PLANETS; i++) {
+        if (!env->planets[i].active) continue;
+        signature ^= (unsigned int)(i + 1);
+        signature *= 16777619u;
+        signature ^= (unsigned int)(env->planets[i].id + 1);
+        signature *= 16777619u;
+    }
+    if (cache->planet_slots_step != env->current_step ||
+        cache->planet_slots_signature != signature) {
+        ow_planet_slots_by_id(env, cache->planet_slots);
+        cache->planet_slots_step = env->current_step;
+        cache->planet_slots_signature = signature;
+    }
+    return cache->planet_slots;
 }
 
 static float ow_interval_pair_strength(float xs, float rs, float xt, float rt) {
@@ -806,17 +830,16 @@ static void ow_compute_and_scale_observations_impl(OrbitWars* env, int a, float*
                                                    const int* total_ships, int sum_all_ships,
                                                    const int* active_fleet_indices, int num_active_fleets,
                                                    const float* fleet_cos, const float* fleet_sin,
+                                                   const int* planet_slots,
                                                    int own_prod, int enemy_prod) {
     int na = env->num_agents;
     int player_id = ow_player_for_slot(env, a);
-    int slots[OW_MAX_PLANETS];
     float fleet_grid[OW_LITE_GRID_OBS_SIZE] = {0};
     int clean_fleets[OW_LITE_TOP_FLEETS];
 
     for (int i = 0; i < OW_LITE_TOP_FLEETS; i++) {
         clean_fleets[i] = -1;
     }
-    ow_planet_slots_by_id(env, slots);
     memset(out_obs, 0, sizeof(float) * OW_OBS_SIZE);
 
     for (int i = 0; i < num_active_fleets; i++) {
@@ -855,7 +878,7 @@ static void ow_compute_and_scale_observations_impl(OrbitWars* env, int a, float*
 
     int idx = 0;
     for (int s = 0; s < OW_MAX_PLANETS; s++) {
-        int pi = slots[s];
+        int pi = planet_slots[s];
         if (pi >= 0) {
             PlanetC* pl = &env->planets[pi];
             float owner_rel = 0.0f;
@@ -911,6 +934,7 @@ static void ow_compute_and_scale_observations_impl(OrbitWars* env, int a, float*
 
 static inline void ow_compute_and_scale_observations(OrbitWars* env, int a, float* out_obs, const int* total_ships, int sum_all_ships) {
     int player_id = ow_player_for_slot(env, a);
+    const int* planet_slots = ow_cached_planet_slots_by_id(env);
     int active_fleet_indices[OW_MAX_FLEETS];
     int num_active_fleets = 0;
     float fleet_cos[OW_MAX_FLEETS];
@@ -934,6 +958,7 @@ static inline void ow_compute_and_scale_observations(OrbitWars* env, int a, floa
     }
     ow_compute_and_scale_observations_impl(env, a, out_obs, total_ships, sum_all_ships,
                                            active_fleet_indices, num_active_fleets, fleet_cos, fleet_sin,
+                                           planet_slots,
                                            own_prod, enemy_prod);
 }
 #endif
@@ -983,6 +1008,10 @@ static void ow_compute_observations(OrbitWars* env) {
         }
     }
 
+#ifndef PARITY_TESTING
+    const int* planet_slots = ow_cached_planet_slots_by_id(env);
+#endif
+
     for (int a = 0; a < na; a++) {
 #ifdef PARITY_TESTING
         float raw_obs[OW_OBS_SIZE];
@@ -995,6 +1024,7 @@ static void ow_compute_observations(OrbitWars* env) {
         int enemy_prod = sum_all_prod - own_prod;
         ow_compute_and_scale_observations_impl(env, a, env->obs_ptr[a], total_ships, sum_all_ships,
                                                active_fleet_indices, num_active_fleets, fleet_cos, fleet_sin,
+                                               planet_slots,
                                                own_prod, enemy_prod);
 #endif
     }
@@ -1020,6 +1050,8 @@ void c_reset(OrbitWars* env) {
     for (int f = 0; f < OW_MAX_FLEETS; f++) {
         cache->fleet_id[f] = -1;
     }
+    cache->planet_slots_step = -1;
+    cache->planet_slots_signature = 0;
     /* Clear game state */
     memset(env->planets, 0, sizeof(env->planets));
     memset(env->fleets, 0, sizeof(env->fleets));

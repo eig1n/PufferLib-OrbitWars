@@ -4,10 +4,10 @@ Scope: implementation-only speedups that keep the lite public contract intact un
 
 ## Highest-Leverage Fixed-Cost Work
 
-1. Cache sorted planet slots once per env step.
-   - Current observation code recomputes ID-sorted planet slots per player with a branchy `O(P^3)` helper.
-   - Store `planet_slots[48]` in `EnvCache`.
-   - Invalidate/rebuild on reset, comet spawn, comet expiration, or any planet active/id change.
+1. DONE: Cache sorted planet slots once per env step.
+   - Observation code no longer recomputes ID-sorted planet slots per player with the branchy `O(P^3)` helper.
+   - `EnvCache` stores `planet_slots[48]` and rebuilds on step/signature change.
+   - Reset invalidates the cache; the active/id signature protects direct test mutations in the same step.
 
 2. Track active fleets explicitly.
    - Current movement and observation paths scan all `1024` fleet slots.

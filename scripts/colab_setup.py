@@ -31,14 +31,9 @@ packages = [
     "clang",
     "libomp-dev",
     "ccache",
-    "libglfw3",
-    "libgl1-mesa-dev",
-    "python3.12-dev",
-    "libnccl2",
-    "libnccl-dev",
 ]
 run("apt-get update -qq")
-run(f"apt-get install -y -qq {' '.join(packages)} > /dev/null 2>&1")
+run(f"apt-get install -y -qq {' '.join(packages)}")
 
 # 2. Symlink python -> python3 if missing
 print("\n--- [2/4] Setting up python symlink ---")

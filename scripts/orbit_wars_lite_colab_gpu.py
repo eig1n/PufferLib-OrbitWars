@@ -98,25 +98,9 @@ train_cmd = [
     "pufferlib.pufferl",
     "train",
     "orbit_wars_lite",
-    "--selfplay.enabled",
-    "0",
-    "--vec.total-agents",
-    "8192",
-    "--vec.num-buffers",
-    "4",
-    "--vec.num-threads",
-    "8",
-    "--train.total-timesteps",
-    "4194304",
-    "--train.minibatch-size",
-    "32768",
-    "--train.horizon",
-    "64",
-    "--checkpoint-interval",
-    "1",
 ]
-code, train_log = run_stream(train_cmd, cwd=REPO_DIR, timeout=900, env=env)
-if code != 0:
+code, train_log = run_stream(train_cmd, cwd=REPO_DIR, timeout=600, env=env)
+if code != 0 and code != 124:
     print(f"Training command exited with {code}")
     raise SystemExit(code)
 

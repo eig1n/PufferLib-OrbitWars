@@ -47,7 +47,7 @@ except ImportError:
 # Configuration constants
 OBS_SIZE = 848
 NUM_ATNS = 30
-NUM_LAYERS = 1
+NUM_LAYERS = 5
 
 
 class CustomEncoder(nn.Module):
@@ -183,6 +183,7 @@ def initialize_policy():
 
     # Locate the checkpoint
     checkpoint_candidates = [
+        os.path.join(repo_root, "checkpoints/orbit_wars_lite/colab_t4_selfplay_128_5/checkpoint.bin"),
         os.path.join(repo_root, "checkpoints/orbit_wars_lite/colab_t4_smoke/0000000006291456.bin"),
         os.path.join(current_dir, "0000000006291456.bin"),
     ]
